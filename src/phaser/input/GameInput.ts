@@ -8,8 +8,7 @@ export class GameInput {
   private readonly cursors: Phaser.Types.Input.Keyboard.CursorKeys;
   private readonly aKey: Phaser.Input.Keyboard.Key;
   private readonly dKey: Phaser.Input.Keyboard.Key;
-  private mouseTargetX: number;
-  private mouseControlActive = false;
+  private pendingMouseDisplacement = 0;
   private hadPointerLock = false;
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -26,14 +25,10 @@ export class GameInput {
 
   private readonly handleMouseMove = (event: MouseEvent): void => {
     if (!this.isRunning() || document.pointerLockElement !== this.scene.game.canvas) return;
-    if (!this.mouseControlActive) {
-      this.mouseTargetX = this.getPaddleX();
-      this.mouseControlActive = true;
-    }
     const canvasWidth = this.scene.game.canvas.getBoundingClientRect().width;
     if (canvasWidth === 0) return;
     const physicalToLogicalScale = this.scene.scale.gameSize.width / canvasWidth;
-    this.mouseTargetX += event.movementX * physicalToLogicalScale * GAME_CONFIG.input.mouseSensitivity;
+    this.pendingMouseDisplacement += event.movementX * physicalToLogicalScale * GAME_CONFIG.input.mouseSensitivity;
   };
 
   private readonly handlePointerLockChange = (): void => {
@@ -55,7 +50,6 @@ export class GameInput {
 
   constructor(
     private readonly scene: Phaser.Scene,
-    private readonly getPaddleX: () => number,
     private readonly isRunning: () => boolean,
     private readonly onTogglePause: () => void,
     private readonly onPointerPause: () => void,
@@ -65,7 +59,6 @@ export class GameInput {
     this.cursors = scene.input.keyboard.createCursorKeys();
     this.aKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.dKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
-    this.mouseTargetX = getPaddleX();
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('pointerdown', this.handleWindowPointerDown);
     window.addEventListener('mousemove', this.handleMouseMove);
@@ -75,8 +68,7 @@ export class GameInput {
   }
 
   enterRunning(): void {
-    this.mouseControlActive = false;
-    this.mouseTargetX = this.getPaddleX();
+    this.pendingMouseDisplacement = 0;
     this.requestPointerLock();
   }
 
@@ -87,8 +79,7 @@ export class GameInput {
   }
 
   enterPaused(): void {
-    this.mouseControlActive = false;
-    this.mouseTargetX = this.getPaddleX();
+    this.pendingMouseDisplacement = 0;
     if (document.pointerLockElement) document.exitPointerLock();
   }
 
@@ -96,13 +87,11 @@ export class GameInput {
     const leftHeld = this.cursors.left.isDown || this.aKey.isDown;
     const rightHeld = this.cursors.right.isDown || this.dKey.isDown;
     const movementAxis = leftHeld === rightHeld ? 0 : leftHeld ? -1 : 1;
-    if (movementAxis !== 0) {
-      this.mouseControlActive = false;
-      this.mouseTargetX = this.getPaddleX();
-    }
+    const mouseDisplacement = movementAxis === 0 ? this.pendingMouseDisplacement : 0;
+    this.pendingMouseDisplacement = 0;
     return {
       movementAxis,
-      paddleTargetX: movementAxis === 0 && this.mouseControlActive ? this.mouseTargetX : null,
+      mouseDisplacement,
     };
   }
 

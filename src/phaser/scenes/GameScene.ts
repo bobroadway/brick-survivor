@@ -29,7 +29,6 @@ export class GameScene extends Phaser.Scene {
     this.graphics = this.add.graphics();
     this.gameInput = new GameInput(
       this,
-      () => this.state.paddle.x,
       () => isSimulationRunning(this.session),
       () => {
         toggleManualPause(this.session);
@@ -64,7 +63,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.accumulator += Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
-    const simulationInput = this.gameInput.readSimulationInput();
+    const stepCount = Math.floor(this.accumulator / GAME_CONFIG.fixedStepSeconds);
+    if (stepCount === 0) return;
+    const frameInput = this.gameInput.readSimulationInput();
+    const simulationInput = {
+      movementAxis: frameInput.movementAxis,
+      mouseDisplacement: frameInput.mouseDisplacement / stepCount,
+    };
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
       stepSimulation(this.state, simulationInput, GAME_CONFIG.fixedStepSeconds);
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
