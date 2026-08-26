@@ -1,13 +1,54 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+type DisplayMode = 'WINDOWED' | 'FULLSCREEN';
+
+function getWindowForEvent(event: Electron.IpcMainInvokeEvent): BrowserWindow {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) throw new Error('Desktop window is unavailable');
+  return window;
+}
+
+function getDisplayMode(window: BrowserWindow): DisplayMode {
+  return window.isFullScreen() ? 'FULLSCREEN' : 'WINDOWED';
+}
+
+async function setDisplayMode(window: BrowserWindow, mode: DisplayMode): Promise<DisplayMode> {
+  if (mode === 'FULLSCREEN') {
+    if (!window.isFullScreen()) {
+      await new Promise<void>((resolve) => {
+        window.once('enter-full-screen', () => resolve());
+        window.setFullScreen(true);
+      });
+    }
+  } else {
+    if (window.isFullScreen()) {
+      await new Promise<void>((resolve) => {
+        window.once('leave-full-screen', () => resolve());
+        window.setFullScreen(false);
+      });
+    }
+    window.setContentSize(1280, 720);
+    window.center();
+  }
+  return mode;
+}
+
+ipcMain.handle('desktop:get-display-mode', (event) => getDisplayMode(getWindowForEvent(event)));
+ipcMain.handle('desktop:set-display-mode', (event, mode: DisplayMode) => setDisplayMode(getWindowForEvent(event), mode));
+ipcMain.handle('desktop:toggle-display-mode', (event) => {
+  const window = getWindowForEvent(event);
+  return setDisplayMode(window, window.isFullScreen() ? 'WINDOWED' : 'FULLSCREEN');
+});
+ipcMain.handle('desktop:quit', () => app.quit());
 
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1280,
     height: 720,
+    useContentSize: true,
     minWidth: 800,
     minHeight: 450,
     resizable: true,
@@ -15,13 +56,15 @@ function createWindow(): void {
     backgroundColor: '#10131a',
     show: false,
     webPreferences: {
-      preload: path.join(currentDirectory, 'preload.js'),
+      preload: path.join(currentDirectory, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
   window.once('ready-to-show', () => window.show());
+  window.on('enter-full-screen', () => window.webContents.send('desktop:display-mode-changed', 'FULLSCREEN'));
+  window.on('leave-full-screen', () => window.webContents.send('desktop:display-mode-changed', 'WINDOWED'));
 
   const developmentUrl = process.env.VITE_DEV_SERVER_URL;
   if (developmentUrl) {
@@ -32,6 +75,7 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   createWindow();
 
   app.on('activate', () => {

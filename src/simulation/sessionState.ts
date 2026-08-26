@@ -26,6 +26,12 @@ export function pauseManually(session: SessionState): void {
   session.suspensionReason = SuspensionReason.ManualPause;
 }
 
+export function resumeManualPause(session: SessionState): void {
+  if (session.suspensionReason !== SuspensionReason.ManualPause) return;
+  session.phase = GamePhase.Running;
+  session.suspensionReason = null;
+}
+
 export function toggleManualPause(session: SessionState): void {
   if (session.suspensionReason === SuspensionReason.ManualPause) {
     session.phase = GamePhase.Running;

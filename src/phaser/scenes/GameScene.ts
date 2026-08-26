@@ -6,10 +6,11 @@ import {
   createSessionState,
   isSimulationRunning,
   pauseManually,
-  toggleManualPause,
+  resumeManualPause,
   type SessionState,
 } from '../../simulation/sessionState';
 import { GameInput } from '../input/GameInput';
+import { PauseMenu } from '../ui/PauseMenu';
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
@@ -18,7 +19,9 @@ export class GameScene extends Phaser.Scene {
   private graphics!: Phaser.GameObjects.Graphics;
   private debugText?: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
-  private pauseText!: Phaser.GameObjects.Text;
+  private pauseMenu!: PauseMenu;
+  private removeDisplayModeListener?: () => void;
+  private displayMode: DisplayMode = 'WINDOWED';
   private accumulator = 0;
 
   constructor() { super('GameScene'); }
@@ -30,11 +33,7 @@ export class GameScene extends Phaser.Scene {
     this.gameInput = new GameInput(
       this,
       () => isSimulationRunning(this.session),
-      () => {
-        toggleManualPause(this.session);
-        this.applyPausePresentation();
-      },
-      () => this.pauseIfRunning(),
+      (code) => this.handleShellKey(code),
       () => this.pauseIfRunning(),
     );
     if (GAME_CONFIG.debug.enabled) {
@@ -42,16 +41,32 @@ export class GameScene extends Phaser.Scene {
         color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
       });
     }
-    this.add.text(GAME_CONFIG.width - 54, 48, 'SPACE — PAUSE', {
+    this.add.text(GAME_CONFIG.width - 54, 48, 'TAB — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0);
     this.pauseShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.58)
       .setOrigin(0)
       .setVisible(false);
-    this.pauseText = this.add.text(GAME_CONFIG.width / 2, GAME_CONFIG.height / 2, 'PAUSED', {
-      color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '54px', fontStyle: 'bold',
-    }).setOrigin(0.5).setVisible(false);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.gameInput.destroy());
+    this.pauseMenu = new PauseMenu(this, {
+      resume: () => this.resumeGame(),
+      setDisplayMode: (mode) => void this.changeDisplayMode(mode),
+      restart: () => this.restartRun(),
+      quit: () => void window.desktop?.quit(),
+    });
+    if (window.desktop) {
+      void window.desktop.getDisplayMode().then((mode) => {
+        this.displayMode = mode;
+        this.pauseMenu.setDisplayMode(mode);
+      });
+      this.removeDisplayModeListener = window.desktop.onDisplayModeChanged((mode) => {
+        this.displayMode = mode;
+        this.pauseMenu.setDisplayMode(mode);
+      });
+    }
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.gameInput.destroy();
+      this.removeDisplayModeListener?.();
+    });
     this.applyPausePresentation();
     this.drawGame();
   }
@@ -87,7 +102,8 @@ export class GameScene extends Phaser.Scene {
     if (paused) this.gameInput.enterPaused();
     else this.gameInput.enterRunning();
     this.pauseShade.setVisible(paused);
-    this.pauseText.setVisible(paused);
+    if (paused) this.pauseMenu.show();
+    else this.pauseMenu.hide();
     document.body.classList.toggle('game-paused', paused);
     this.drawGame();
   }
@@ -96,6 +112,72 @@ export class GameScene extends Phaser.Scene {
     if (!isSimulationRunning(this.session)) return;
     pauseManually(this.session);
     this.applyPausePresentation();
+  }
+
+  private resumeGame(): void {
+    resumeManualPause(this.session);
+    this.applyPausePresentation();
+  }
+
+  private restartRun(): void {
+    this.state = createInitialGameState();
+    resumeManualPause(this.session);
+    this.applyPausePresentation();
+  }
+
+  private handleShellKey(code: string): void {
+    if (code === 'F11') {
+      void this.toggleDisplayMode();
+      return;
+    }
+    if (isSimulationRunning(this.session)) {
+      if (['Tab', 'Escape', 'Enter', 'NumpadEnter'].includes(code)) this.pauseIfRunning();
+      return;
+    }
+    if (this.pauseMenu.hasConfirmation()) {
+      if (code === 'Escape') this.pauseMenu.cancelConfirmation();
+      else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
+      else this.navigatePauseMenu(code);
+      return;
+    }
+    if (code === 'Tab' || code === 'Escape') this.resumeGame();
+    else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
+    else this.navigatePauseMenu(code);
+  }
+
+  private navigatePauseMenu(code: string): void {
+    if (code === 'ArrowUp' || code === 'KeyW') this.pauseMenu.moveVertical(-1);
+    else if (code === 'ArrowDown' || code === 'KeyS') this.pauseMenu.moveVertical(1);
+    else if (code === 'ArrowLeft' || code === 'KeyA') this.pauseMenu.moveHorizontal(-1);
+    else if (code === 'ArrowRight' || code === 'KeyD') this.pauseMenu.moveHorizontal(1);
+  }
+
+  private async toggleDisplayMode(): Promise<void> {
+    if (!window.desktop) {
+      this.displayMode = this.displayMode === 'WINDOWED' ? 'FULLSCREEN' : 'WINDOWED';
+      this.pauseMenu.setDisplayMode(this.displayMode);
+      return;
+    }
+    await this.performDisplayTransition(() => window.desktop!.toggleDisplayMode());
+  }
+
+  private async changeDisplayMode(mode: DisplayMode): Promise<void> {
+    if (!window.desktop) {
+      this.displayMode = mode;
+      this.pauseMenu.setDisplayMode(mode);
+      return;
+    }
+    await this.performDisplayTransition(() => window.desktop!.setDisplayMode(mode));
+  }
+
+  private async performDisplayTransition(change: () => Promise<DisplayMode>): Promise<void> {
+    this.gameInput.beginDisplayTransition();
+    try {
+      this.displayMode = await change();
+      this.pauseMenu.setDisplayMode(this.displayMode);
+    } finally {
+      this.gameInput.endDisplayTransition();
+    }
   }
 
   private drawGame(): void {

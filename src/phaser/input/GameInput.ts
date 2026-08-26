@@ -2,7 +2,11 @@ import Phaser from 'phaser';
 import { GAME_CONFIG } from '../../simulation/config';
 import type { SimulationInput } from '../../simulation/simulation';
 
-const PAUSE_CODES = new Set(['Space', 'Escape', 'Enter', 'NumpadEnter']);
+const SHELL_CODES = new Set([
+  'Tab', 'Escape', 'Enter', 'NumpadEnter', 'F11',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'KeyW', 'KeyA', 'KeyS', 'KeyD',
+]);
 const LEFT_CODES = new Set(['KeyA', 'ArrowLeft']);
 const RIGHT_CODES = new Set(['KeyD', 'ArrowRight']);
 const SHIFT_CODES = new Set(['ShiftLeft', 'ShiftRight']);
@@ -19,25 +23,22 @@ export class GameInput {
   private readonly heldShiftCodes = new Set<string>();
   private pendingMouseDisplacement = 0;
   private hadPointerLock = false;
+  private displayTransitionActive = false;
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
-    if (!event.repeat && PAUSE_CODES.has(event.code)) this.onTogglePause();
+    if (!event.repeat && SHELL_CODES.has(event.code)) this.onShellKeyDown(event.code);
     if (SHIFT_CODES.has(event.code)) this.heldShiftCodes.add(event.code);
     const direction = getMovementDirection(event.code);
     if (this.isRunning() && direction !== null) {
       this.requestPointerLock();
       this.heldMovementCodes.add(event.code);
     }
-    if (PAUSE_CODES.has(event.code) || event.code === 'ArrowLeft' || event.code === 'ArrowRight') event.preventDefault();
+    if (SHELL_CODES.has(event.code)) event.preventDefault();
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
     this.heldMovementCodes.delete(event.code);
     this.heldShiftCodes.delete(event.code);
-  };
-
-  private readonly handleWindowPointerDown = (): void => {
-    if (this.isRunning()) this.onPointerPause();
   };
 
   private readonly handleMouseMove = (event: MouseEvent): void => {
@@ -53,12 +54,12 @@ export class GameInput {
     if (locked) this.hadPointerLock = true;
     else if (this.hadPointerLock) {
       this.hadPointerLock = false;
-      if (this.isRunning()) this.onUnexpectedInputLoss();
+      if (this.isRunning() && !this.displayTransitionActive) this.onUnexpectedInputLoss();
     }
   };
 
   private readonly handleFocusLoss = (): void => {
-    if (this.isRunning()) this.onUnexpectedInputLoss();
+    if (this.isRunning() && !this.displayTransitionActive) this.onUnexpectedInputLoss();
   };
 
   private readonly handleVisibilityChange = (): void => {
@@ -68,14 +69,12 @@ export class GameInput {
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly isRunning: () => boolean,
-    private readonly onTogglePause: () => void,
-    private readonly onPointerPause: () => void,
+    private readonly onShellKeyDown: (code: string) => void,
     private readonly onUnexpectedInputLoss: () => void,
   ) {
     if (!scene.input.keyboard) throw new Error('Keyboard input is unavailable');
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
-    window.addEventListener('pointerdown', this.handleWindowPointerDown);
     window.addEventListener('mousemove', this.handleMouseMove);
     window.addEventListener('blur', this.handleFocusLoss);
     document.addEventListener('pointerlockchange', this.handlePointerLockChange);
@@ -96,6 +95,18 @@ export class GameInput {
   enterPaused(): void {
     this.resetMovementInput();
     if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  beginDisplayTransition(): void {
+    this.displayTransitionActive = true;
+    this.resetMovementInput();
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  endDisplayTransition(): void {
+    this.displayTransitionActive = false;
+    this.resetMovementInput();
+    if (this.isRunning()) this.requestPointerLock();
   }
 
   readSimulationInput(): SimulationInput {
@@ -124,7 +135,6 @@ export class GameInput {
   destroy(): void {
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
-    window.removeEventListener('pointerdown', this.handleWindowPointerDown);
     window.removeEventListener('mousemove', this.handleMouseMove);
     window.removeEventListener('blur', this.handleFocusLoss);
     document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
