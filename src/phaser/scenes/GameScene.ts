@@ -34,9 +34,9 @@ import { BuildOverlay } from '../ui/BuildOverlay';
 import { PauseMenu } from '../ui/PauseMenu';
 import { PowerChoiceOverlay } from '../ui/PowerChoiceOverlay';
 
-const BRICK_COLORS = [0x607d9d, 0x657c91, 0x6c738c, 0x756b83] as const;
 const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f } as const;
 const FIRE_EFFECT_COLOR = 0xef5350;
+const WIND_EFFECT_COLOR = 0x76a982;
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
@@ -398,8 +398,7 @@ export class GameScene extends Phaser.Scene {
 
     for (const column of this.state.brickField.columns) {
       for (const brick of column) {
-        const colorIndex = brick.visualVariant % BRICK_COLORS.length;
-        graphics.fillStyle(BRICK_COLORS[colorIndex]);
+        graphics.fillStyle(GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass]);
         if (brick.y < field.top) {
           const visibleHeight = brick.y + brick.height - field.top;
           if (visibleHeight > 0) graphics.fillRect(brick.x, field.top, brick.width, visibleHeight);
@@ -422,6 +421,8 @@ export class GameScene extends Phaser.Scene {
     }
     graphics.lineStyle(4, FIRE_EFFECT_COLOR, 0.75);
     for (const effect of this.state.fireEffects) graphics.lineBetween(effect.x1, effect.y, effect.x2, effect.y);
+    graphics.lineStyle(4, WIND_EFFECT_COLOR, 0.75);
+    for (const effect of this.state.windEffects) graphics.lineBetween(effect.x, effect.y1, effect.x, effect.y2);
     const paddle = this.state.paddle;
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);
@@ -553,12 +554,11 @@ export class GameScene extends Phaser.Scene {
     const transition = GAME_CONFIG.levelUpTransition;
     if (this.session.phase === GamePhase.LevelUpSlowdown) {
       const progress = Math.min(1, this.session.phaseTimerSeconds / transition.slowdownDurationSeconds);
-      return progress * progress;
+      return progress ** 6;
     }
     if (this.session.phase === GamePhase.LevelUpSpeedup) {
       const progress = Math.min(1, this.session.phaseTimerSeconds / transition.overlayFadeOutDurationSeconds);
-      const smoothProgress = progress * progress * (3 - 2 * progress);
-      return 1 - smoothProgress;
+      return (1 - progress) ** 6;
     }
     return this.session.phase === GamePhase.LevelUp ? 1 : 0;
   }

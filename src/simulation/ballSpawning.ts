@@ -28,7 +28,6 @@ export function spawnBallsFromParent(
       historySampleTimer: 0,
       radius: ball.radius,
       pierceCharge,
-      pierceProcArmed: pierceCharge > 0,
       speedAssistStart: parentSpeed,
       speedAssistTarget: parentSpeed,
       speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,

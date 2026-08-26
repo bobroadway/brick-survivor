@@ -13,7 +13,6 @@ export interface BallState extends Vector2 {
   historySampleTimer: number;
   radius: number;
   pierceCharge: number;
-  pierceProcArmed: boolean;
   speedAssistStart: number;
   speedAssistTarget: number;
   speedAssistElapsedSeconds: number;
@@ -27,6 +26,7 @@ export interface ProjectileState extends Vector2 {
   targetBrickId?: string;
 }
 export interface FireEffectState { x1: number; x2: number; y: number; remainingSeconds: number }
+export interface WindEffectState { x: number; y1: number; y2: number; remainingSeconds: number }
 export interface GameState {
   paddle: PaddleState;
   balls: BallState[];
@@ -37,6 +37,7 @@ export interface GameState {
   powers: RunPowerState;
   projectiles: ProjectileState[];
   fireEffects: FireEffectState[];
+  windEffects: WindEffectState[];
   nextProjectileId: number;
 }
 
@@ -56,7 +57,6 @@ export function createInitialGameState(): GameState {
       historySampleTimer: 0,
       radius: ball.radius,
       pierceCharge: 0,
-      pierceProcArmed: false,
       speedAssistStart: ball.speed,
       speedAssistTarget: ball.speed,
       speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,
@@ -68,6 +68,7 @@ export function createInitialGameState(): GameState {
     powers,
     projectiles: [],
     fireEffects: [],
+    windEffects: [],
     nextProjectileId: 1,
   };
 }
@@ -92,7 +93,6 @@ export function prepareSingleBall(state: GameState): void {
     historySampleTimer: 0,
     radius: ball.radius,
     pierceCharge: getPowerLevel(state.powers, 'PIERCING_BALL'),
-    pierceProcArmed: getPowerLevel(state.powers, 'PIERCING_BALL') > 0,
     speedAssistStart: ball.speed,
     speedAssistTarget: ball.speed,
     speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,

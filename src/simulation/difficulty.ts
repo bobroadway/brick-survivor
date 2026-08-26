@@ -32,25 +32,6 @@ export function resolveBrickDescentSpeed(speedClass: BrickSpeedClass, level: num
   return slowSpeed + GAME_CONFIG.difficulty.speedClassRangePositions[speedClass] * range;
 }
 
-export function getWeightedAverageBrickSpeed(level: number): number {
-  const distribution = GAME_CONFIG.bricks.speedClassDistribution;
-  let weightedSpeed = 0;
-  let totalWeight = 0;
-  for (const { speedClass, weight } of distribution) {
-    weightedSpeed += resolveBrickDescentSpeed(speedClass, level) * weight;
-    totalWeight += weight;
-  }
-  return weightedSpeed / totalWeight;
-}
-
-export function getDifficultyFactor(level: number): number {
-  return getTargetAverageBrickSpeed(level) / GAME_CONFIG.difficulty.baseAverageBrickSpeed;
-}
-
-export function getRowSpawnInterval(level: number): number {
-  return GAME_CONFIG.bricks.baseRowSpawnIntervalSeconds / getDifficultyFactor(level);
-}
-
 export function getBrickDescentSpeedRange(level: number): { minimum: number; maximum: number } {
   const speeds = GAME_CONFIG.bricks.speedClassDistribution
     .map(({ speedClass }) => resolveBrickDescentSpeed(speedClass, level));

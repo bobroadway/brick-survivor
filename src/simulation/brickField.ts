@@ -1,5 +1,12 @@
 import { GAME_CONFIG } from './config';
-import { getRowSpawnInterval, resolveBrickDescentSpeed, type BrickSpeedClass } from './difficulty';
+import {
+  getBrickBottom,
+  getBrickTop,
+  getBrickRowPitch,
+  getMinimumBrickVerticalEdgeGap,
+  getMinimumUpperBrickY,
+} from './brickGeometry';
+import { resolveBrickDescentSpeed, type BrickSpeedClass } from './difficulty';
 
 export type BrickKind = 'NORMAL';
 
@@ -15,13 +22,11 @@ export interface BrickState {
   hp: number;
   xpValue: number;
   kind: BrickKind;
-  visualVariant: number;
 }
 
 export interface BrickFieldState {
   /** Each column remains ordered from top to bottom. */
   columns: BrickState[][];
-  spawnCycleProgress: number;
   generatorState: number;
   speedClassGeneratorState: number;
   nextRowId: number;
@@ -79,46 +84,64 @@ function generateFormation(
     column,
     rank: nextRandom(field),
   })).sort((left, right) => left.rank - right.rank);
-  const visualVariant = Math.floor(nextRandom(field) * 4);
 
   for (let rank = 0; rank < targetCount; rank += 1) {
     const column = rankedColumns[rank].column;
-    const topBrick = field.columns[column][0];
-    const spawnY = insertAtTop && topBrick
-      ? Math.min(y, topBrick.y - config.verticalGap - config.brickHeight)
-      : y;
     const brick: BrickState = {
       id: `${rowId}:${column}`,
       rowId,
       column,
-      x: config.originX + column * (config.brickWidth + config.horizontalGap),
-      y: spawnY,
+      x: getBrickGridOriginX() + column * (config.brickWidth + config.horizontalGap),
+      y,
       width: config.brickWidth,
       height: config.brickHeight,
       speedClass: generateSpeedClass(field),
       hp: 1,
       xpValue: GAME_CONFIG.progression.normalBrickXp,
       kind: 'NORMAL',
-      visualVariant,
     };
     if (insertAtTop) field.columns[column].unshift(brick);
     else field.columns[column].push(brick);
   }
 }
 
-export function getBrickRowPitch(): number {
-  return GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalGap;
+export function getMinimumSameColumnBrickGap(): number {
+  return getMinimumBrickVerticalEdgeGap();
+}
+
+export { getBrickRowPitch } from './brickGeometry';
+
+export function getBrickGridWidth(): number {
+  const config = GAME_CONFIG.bricks;
+  return config.columns * config.brickWidth + (config.columns - 1) * config.horizontalGap;
+}
+
+export function getBrickGridOriginX(): number {
+  return (GAME_CONFIG.width - getBrickGridWidth()) / 2;
 }
 
 export function getBrickSpawnY(): number {
   return GAME_CONFIG.bricks.fieldTopY - getBrickRowPitch();
 }
 
+export function getFormationEntryClearance(field: BrickFieldState): number {
+  let topmostBrickTop = Number.POSITIVE_INFINITY;
+  for (const column of field.columns) {
+    for (const brick of column) topmostBrickTop = Math.min(topmostBrickTop, getBrickTop(brick));
+  }
+  if (!Number.isFinite(topmostBrickTop)) return Number.POSITIVE_INFINITY;
+  const spawnedBrick = { y: getBrickSpawnY(), height: GAME_CONFIG.bricks.brickHeight };
+  return topmostBrickTop - getBrickBottom(spawnedBrick);
+}
+
+export function hasFormationEntryClearance(field: BrickFieldState): boolean {
+  return getFormationEntryClearance(field) + 1e-9 >= getMinimumBrickVerticalEdgeGap();
+}
+
 export function createBrickField(): BrickFieldState {
   const seed = GAME_CONFIG.bricks.generationSeed >>> 0;
   const field: BrickFieldState = {
     columns: Array.from({ length: GAME_CONFIG.bricks.columns }, () => []),
-    spawnCycleProgress: 0,
     generatorState: seed,
     speedClassGeneratorState: (seed ^ 0x9e3779b9) >>> 0,
     nextRowId: 1,
@@ -144,16 +167,19 @@ export function advanceBrickField(
   deltaSeconds: number,
   difficultyLevel: number = GAME_CONFIG.progression.startingLevel,
 ): boolean {
-  field.spawnCycleProgress += deltaSeconds / getRowSpawnInterval(difficultyLevel);
-  const verticalGap = GAME_CONFIG.bricks.verticalGap;
-
   for (const column of field.columns) {
     for (let index = column.length - 1; index >= 0; index -= 1) {
       const brick = column[index];
       const descentSpeed = resolveBrickDescentSpeed(brick.speedClass, difficultyLevel);
       let nextY = brick.y + descentSpeed * deltaSeconds;
       const brickBelow = column[index + 1];
-      if (brickBelow) nextY = Math.min(nextY, brickBelow.y - verticalGap - brick.height);
+      if (brickBelow) {
+        const closestLegalY = getMinimumUpperBrickY(brickBelow, brick.height);
+        // A newly spawned formation keeps its authoritative entry Y if the
+        // spawn area is temporarily tight; blocking must never move it upward
+        // or pack it against a lower brick at insertion time.
+        nextY = closestLegalY < brick.y ? brick.y : Math.min(nextY, closestLegalY);
+      }
       brick.y = nextY;
     }
   }
@@ -164,8 +190,7 @@ export function advanceBrickField(
     }
   }
 
-  while (field.spawnCycleProgress >= 1) {
-    field.spawnCycleProgress -= 1;
+  if (hasFormationEntryClearance(field)) {
     generateFormation(field, getBrickSpawnY(), true, difficultyLevel);
   }
   return false;

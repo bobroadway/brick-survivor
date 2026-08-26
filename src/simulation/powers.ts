@@ -2,11 +2,13 @@ import { GAME_CONFIG } from './config';
 import { spawnBallsFromParent } from './ballSpawning';
 import type { GameState } from './gameState';
 
-export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE' | 'ELECTRIC_BALL' | 'FIRE_BALL';
+export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE'
+  | 'ELECTRIC_BALL' | 'FIRE_BALL' | 'WIND_BALL';
 
 export interface PowerDefinition {
   id: PowerId;
   name: string;
+  enabledInOfferPool: boolean;
   describeCurrent(level: number): string;
   describeSelection?(level: number): string;
 }
@@ -14,6 +16,7 @@ export interface PowerDefinition {
 export interface RunPowerState {
   levels: Partial<Record<PowerId, number>>;
   ownedOrder: PowerId[];
+  maxedPowerOrder: PowerId[];
   rerollsRemaining: number;
   pendingSelections: number;
   currentChoices: PowerId[];
@@ -26,34 +29,34 @@ export interface RunPowerState {
 
 export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
   {
-    id: 'GUN', name: 'GUN',
+    id: 'GUN', name: 'GUN', enabledInOfferPool: true,
     describeCurrent: (level) => level === 1
       ? 'Dual guns automatically fire upward from the paddle.'
       : `Fires ${level} volleys before reloading.`,
   },
   {
-    id: 'PIERCING_BALL', name: 'PIERCING BALL',
+    id: 'PIERCING_BALL', name: 'PIERCING BALL', enabledInOfferPool: true,
     describeCurrent: (level) => `Balls can pierce through ${level} brick${level === 1 ? '' : 's'} before needing to bounce and recharge.`,
   },
   {
-    id: 'SPLITTING_BALL', name: 'SPLITTING BALL',
-    describeCurrent: (level) => `Creates ${level} additional ball${level === 1 ? '' : 's'} every 20 seconds.`,
+    id: 'SPLITTING_BALL', name: 'SPLITTING BALL', enabledInOfferPool: true,
+    describeCurrent: (level) => `Creates ${level} additional ball${level === 1 ? '' : 's'} every ${GAME_CONFIG.powers.splittingIntervalSeconds} seconds.`,
     describeSelection: (level) => level === 1
-      ? 'Immediately creates 1 additional ball, then creates another every 20 seconds.'
-      : `Creates ${level} additional balls every 20 seconds.`,
+      ? `Immediately creates 1 additional ball, then creates another every ${GAME_CONFIG.powers.splittingIntervalSeconds} seconds.`
+      : `Creates ${level} additional balls every ${GAME_CONFIG.powers.splittingIntervalSeconds} seconds.`,
   },
   {
-    id: 'PADDLE_SIZE', name: 'PADDLE SIZE',
+    id: 'PADDLE_SIZE', name: 'PADDLE SIZE', enabledInOfferPool: false,
     describeCurrent: (level) => level === 5 ? 'Doubles paddle width.' : `Increases paddle width by ${level * 20}%.`,
   },
   {
-    id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL',
+    id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL', enabledInOfferPool: true,
     describeCurrent: (level) => level === 1
       ? 'Destroyed bricks zap the nearest brick within range.'
       : `Destroyed bricks zap up to ${level} nearby bricks.`,
   },
   {
-    id: 'FIRE_BALL', name: 'FIRE BALL',
+    id: 'FIRE_BALL', name: 'FIRE BALL', enabledInOfferPool: true,
     describeCurrent: (level) => [
       '',
       'Destroyed bricks blast nearby bricks to the left and right.',
@@ -63,11 +66,17 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
       'Destroyed bricks blast the entire horizontal line.',
     ][level],
   },
+  {
+    id: 'WIND_BALL', name: 'WIND BALL', enabledInOfferPool: true,
+    describeCurrent: (level) => level === 5
+      ? 'Destroyed bricks blast every brick above.'
+      : `Destroyed bricks blast ${level + 1} brick spaces above.`,
+  },
 ] as const;
 
 export function createRunPowerState(): RunPowerState {
   return {
-    levels: {}, ownedOrder: [], rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
+    levels: {}, ownedOrder: [], maxedPowerOrder: [], rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
     pendingSelections: 0, currentChoices: [], offerGeneratorState: GAME_CONFIG.powers.offerSeed >>> 0,
     splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunVolleysRemaining: 0,
   };
@@ -93,11 +102,20 @@ export function getPowerLevel(powers: RunPowerState, id: PowerId): number {
 export function getEligiblePowerIds(powers: RunPowerState): PowerId[] {
   const atOwnershipCap = powers.ownedOrder.length >= GAME_CONFIG.powers.maxOwned;
   return POWER_DEFINITIONS
+    .filter(({ enabledInOfferPool }) => enabledInOfferPool)
     .map(({ id }) => id)
     .filter((id) => {
       const level = getPowerLevel(powers, id);
       return level < GAME_CONFIG.powers.maxLevel && (level > 0 || !atOwnershipCap);
     });
+}
+
+export function getMaxedPowerPairs(powers: RunPowerState): ReadonlyArray<readonly [PowerId, PowerId]> {
+  const pairs: Array<readonly [PowerId, PowerId]> = [];
+  for (let index = 0; index + 1 < powers.maxedPowerOrder.length; index += 2) {
+    pairs.push([powers.maxedPowerOrder[index], powers.maxedPowerOrder[index + 1]]);
+  }
+  return pairs;
 }
 
 function nextOfferRandom(powers: RunPowerState): number {
@@ -148,13 +166,13 @@ export function acquirePower(state: GameState, id: PowerId): boolean {
   const newLevel = oldLevel + 1;
   state.powers.levels[id] = newLevel;
   if (oldLevel === 0) state.powers.ownedOrder.push(id);
+  if (newLevel === GAME_CONFIG.powers.maxLevel && !state.powers.maxedPowerOrder.includes(id)) {
+    state.powers.maxedPowerOrder.push(id);
+  }
 
   if (id === 'PIERCING_BALL') {
     const increase = newLevel - oldLevel;
-    for (const ball of state.balls) {
-      ball.pierceCharge = Math.min(newLevel, ball.pierceCharge + increase);
-      if (oldLevel === 0) ball.pierceProcArmed = true;
-    }
+    for (const ball of state.balls) ball.pierceCharge = Math.min(newLevel, ball.pierceCharge + increase);
   } else if (id === 'PADDLE_SIZE') {
     state.paddle.width = GAME_CONFIG.paddle.width * (1 + newLevel * 0.2);
     const minimumX = GAME_CONFIG.playfield.left + state.paddle.width / 2;
