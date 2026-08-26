@@ -36,4 +36,7 @@ export const GAME_CONFIG = {
     originY: 112,
   },
   debug: { enabled: true },
+  rendering: {
+    renderScale: 1,
+  },
 } as const;

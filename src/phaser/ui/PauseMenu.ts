@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../../simulation/config';
+import { RenderQualityManager } from '../rendering/RenderQualityManager';
 import {
   createPauseMenuState,
   movePauseMenuHorizontal,
@@ -31,14 +32,18 @@ export class PauseMenu {
   private readonly modalQuestion: Phaser.GameObjects.Text;
   private displayMode: DisplayMode = 'WINDOWED';
 
-  constructor(private readonly scene: Phaser.Scene, private readonly actions: PauseMenuActions) {
+  constructor(
+    private readonly scene: Phaser.Scene,
+    private readonly renderQuality: RenderQualityManager,
+    private readonly actions: PauseMenuActions,
+  ) {
     this.main = this.scene.add.container(0, 0).setVisible(false);
     this.modal = this.scene.add.container(0, 0).setVisible(false);
-    this.main.add(this.scene.add.text(640, 122, 'PAUSED', {
+    this.main.add(this.renderQuality.addText(640, 122, 'PAUSED', {
       color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '52px', fontStyle: 'bold',
     }).setOrigin(0.5));
     this.createMainButton('RESUME', 640, 215, 270);
-    this.main.add(this.scene.add.text(640, 288, 'DISPLAY MODE', {
+    this.main.add(this.renderQuality.addText(640, 288, 'DISPLAY MODE', {
       color: '#aeb8c8', fontFamily: 'Arial, sans-serif', fontSize: '18px',
     }).setOrigin(0.5));
     this.createMainButton('WINDOWED', 500, 342, 245);
@@ -52,7 +57,7 @@ export class PauseMenu {
     blocker.on(Phaser.Input.Events.POINTER_DOWN, (_pointer: Phaser.Input.Pointer, _x: number, _y: number, event: Phaser.Types.Input.EventData) => event.stopPropagation());
     this.modal.add(blocker);
     this.modal.add(this.scene.add.rectangle(640, 360, 600, 280, 0x171d28, 1).setStrokeStyle(2, 0x65758c));
-    this.modalQuestion = this.scene.add.text(640, 304, '', {
+    this.modalQuestion = this.renderQuality.addText(640, 304, '', {
       color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '28px', fontStyle: 'bold',
     }).setOrigin(0.5);
     this.modal.add(this.modalQuestion);
@@ -82,7 +87,7 @@ export class PauseMenu {
     const background = this.scene.add.rectangle(x, y, width, 48, 0x273243, 0.96)
       .setStrokeStyle(2, 0x53637a)
       .setInteractive({ useHandCursor: true });
-    const label = this.scene.add.text(x, y, id, {
+    const label = this.renderQuality.addText(x, y, id, {
       color: '#e7ecf3', fontFamily: 'Arial, sans-serif', fontSize: '19px', fontStyle: 'bold',
     }).setOrigin(0.5);
     background.on(Phaser.Input.Events.POINTER_OVER, () => {

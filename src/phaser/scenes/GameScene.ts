@@ -10,12 +10,14 @@ import {
   type SessionState,
 } from '../../simulation/sessionState';
 import { GameInput } from '../input/GameInput';
+import { RenderQualityManager } from '../rendering/RenderQualityManager';
 import { PauseMenu } from '../ui/PauseMenu';
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private session!: SessionState;
   private gameInput!: GameInput;
+  private renderQuality!: RenderQualityManager;
   private graphics!: Phaser.GameObjects.Graphics;
   private debugText?: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
@@ -30,6 +32,7 @@ export class GameScene extends Phaser.Scene {
     this.state = createInitialGameState();
     this.session = createSessionState();
     this.graphics = this.add.graphics();
+    this.renderQuality = new RenderQualityManager(this);
     this.gameInput = new GameInput(
       this,
       () => isSimulationRunning(this.session),
@@ -37,17 +40,17 @@ export class GameScene extends Phaser.Scene {
       () => this.pauseIfRunning(),
     );
     if (GAME_CONFIG.debug.enabled) {
-      this.debugText = this.add.text(52, 46, '', {
+      this.debugText = this.renderQuality.addText(52, 46, '', {
         color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
       });
     }
-    this.add.text(GAME_CONFIG.width - 54, 48, 'TAB — PAUSE', {
+    this.renderQuality.addText(GAME_CONFIG.width - 54, 48, 'TAB — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0);
     this.pauseShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.58)
       .setOrigin(0)
       .setVisible(false);
-    this.pauseMenu = new PauseMenu(this, {
+    this.pauseMenu = new PauseMenu(this, this.renderQuality, {
       resume: () => this.resumeGame(),
       setDisplayMode: (mode) => void this.changeDisplayMode(mode),
       restart: () => this.restartRun(),
@@ -65,6 +68,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.gameInput.destroy();
+      this.renderQuality.destroy();
       this.removeDisplayModeListener?.();
     });
     this.applyPausePresentation();
