@@ -1,14 +1,16 @@
 import { GAME_CONFIG } from '../src/simulation/config';
 import { applyBrickDamage, isBallKill, type BrickDestruction, type DamageSource } from '../src/simulation/combat';
 import type { BrickState } from '../src/simulation/brickField';
-import { createInitialGameState } from '../src/simulation/gameState';
+import { createInitialGameState, prepareSingleBall } from '../src/simulation/gameState';
 import {
   acquirePower,
+  banPowerChoice,
   createRunPowerState,
   getEligiblePowerIds,
   getMaxedPowerPairs,
   getPowerDescription,
   prepareNextPowerSelection,
+  rerollPowerChoices,
   type PowerId,
 } from '../src/simulation/powers';
 import {
@@ -18,7 +20,7 @@ import {
   selectWindTargets,
 } from '../src/simulation/powerTargeting';
 import { resolveBrickDescentSpeed, type BrickSpeedClass } from '../src/simulation/difficulty';
-import { getMultiballTargetSpeed, stepSimulation } from '../src/simulation/simulation';
+import { getBallTargetSpeed, stepSimulation } from '../src/simulation/simulation';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -110,7 +112,7 @@ function testOffersAndMaxPairs(): void {
   for (let draw = 0; draw < 600; draw += 1) {
     powers.pendingSelections = 1;
     assert(prepareNextPowerSelection(powers), 'offer generation failed');
-    for (const id of powers.currentChoices) appearances.set(id, (appearances.get(id) ?? 0) + 1);
+    for (const id of powers.currentChoices) if (id) appearances.set(id, (appearances.get(id) ?? 0) + 1);
     powers.currentChoices = [];
   }
   for (const id of eligible) assert((appearances.get(id) ?? 0) > 200, `${id} offer frequency unexpectedly low`);
@@ -123,6 +125,86 @@ function testOffersAndMaxPairs(): void {
   assert(!acquirePower(state, 'GUN'), 'MAX power must not reacquire');
   assert(state.powers.maxedPowerOrder.filter((id) => id === 'GUN').length === 1, 'MAX power appended twice');
   assert(createInitialGameState().powers.maxedPowerOrder.length === 0, 'new run did not clear MAX order');
+}
+
+function testTargetedBanAndRerollResources(): void {
+  const powers = createRunPowerState();
+  powers.pendingSelections = 1;
+  powers.currentChoices = ['GUN', 'FIRE_BALL', 'WIND_BALL'];
+  const initialRerolls = powers.rerollsRemaining;
+  assert(banPowerChoice(powers, 'WIND_BALL'), 'targeted ban failed');
+  assert(powers.bannedPowerIds.has('WIND_BALL'), 'banned power was not retained');
+  assert(powers.bansRemaining === 0, 'ban resource was not consumed exactly once');
+  assert(powers.rerollsRemaining === initialRerolls, 'ban consumed a full reroll');
+  assert(powers.currentChoices[0] === 'GUN' && powers.currentChoices[1] === 'FIRE_BALL', 'ban regenerated unaffected slots');
+  const replacement = powers.currentChoices[2];
+  assert(replacement !== null && replacement !== 'WIND_BALL', 'banned power immediately returned');
+  assert(!powers.currentChoices.slice(0, 2).includes(replacement), 'targeted replacement duplicated another card');
+  assert(powers.pendingSelections === 1, 'ban consumed the level-up reward');
+  assert(!getEligiblePowerIds(powers).includes('WIND_BALL'), 'central eligibility retained banned power');
+  assert(rerollPowerChoices(powers), 'full reroll was unavailable after ban');
+  assert(powers.rerollsRemaining === initialRerolls - 1, 'full reroll resource was not consumed normally');
+  assert(!powers.currentChoices.includes('WIND_BALL'), 'banned power returned through full reroll');
+
+  const repeat = createRunPowerState();
+  repeat.pendingSelections = 1;
+  repeat.currentChoices = ['GUN', 'FIRE_BALL', 'WIND_BALL'];
+  assert(banPowerChoice(repeat, 'WIND_BALL'), 'deterministic repeat ban failed');
+  assert(repeat.currentChoices[2] === replacement, 'targeted replacement was not deterministic');
+}
+
+function testOwnedBanAndNoReplacement(): void {
+  const owned = createRunPowerState();
+  owned.levels.GUN = 2;
+  owned.ownedOrder = ['GUN'];
+  owned.pendingSelections = 1;
+  owned.currentChoices = ['GUN', 'FIRE_BALL', 'WIND_BALL'];
+  assert(banPowerChoice(owned, 'GUN'), 'owned power ban failed');
+  assert(owned.levels.GUN === 2 && owned.ownedOrder.includes('GUN'), 'owned power ban removed current power');
+  assert(!getEligiblePowerIds(owned).includes('GUN'), 'owned banned power remained upgrade-eligible');
+  assert(owned.currentChoices[1] === 'FIRE_BALL' && owned.currentChoices[2] === 'WIND_BALL', 'owned ban changed other slots');
+
+  const capped = createRunPowerState();
+  capped.ownedOrder = ['GUN', 'FIRE_BALL', 'WIND_BALL', 'ELECTRIC_BALL', 'PIERCING_BALL'];
+  capped.levels = { GUN: 1, FIRE_BALL: 1, WIND_BALL: 1, ELECTRIC_BALL: 5, PIERCING_BALL: 5 };
+  capped.maxedPowerOrder = ['ELECTRIC_BALL', 'PIERCING_BALL'];
+  capped.pendingSelections = 1;
+  capped.currentChoices = ['GUN', 'FIRE_BALL', 'WIND_BALL'];
+  assert(banPowerChoice(capped, 'WIND_BALL'), 'no-replacement ban failed');
+  assert(
+    capped.currentChoices[0] === 'GUN'
+      && capped.currentChoices[1] === 'FIRE_BALL'
+      && capped.currentChoices[2] === null,
+    'unavailable replacement did not leave only its slot empty',
+  );
+  assert(capped.pendingSelections === 1, 'empty slot discarded a still-selectable reward');
+  assert(capped.maxedPowerOrder.join(',') === 'ELECTRIC_BALL,PIERCING_BALL', 'ban changed MAX history');
+
+  const noOptions = createRunPowerState();
+  for (const id of getEligiblePowerIds(noOptions)) {
+    if (id !== 'WIND_BALL') noOptions.bannedPowerIds.add(id);
+  }
+  noOptions.pendingSelections = 1;
+  noOptions.currentChoices = ['WIND_BALL'];
+  assert(banPowerChoice(noOptions, 'WIND_BALL'), 'last-option ban failed');
+  assert(noOptions.pendingSelections === 0 && noOptions.currentChoices.length === 0, 'no-eligible reward handling soft-locked');
+}
+
+function testBanRunLifetime(): void {
+  const state = createInitialGameState();
+  state.powers.pendingSelections = 1;
+  state.powers.currentChoices = ['GUN', 'FIRE_BALL', 'WIND_BALL'];
+  assert(banPowerChoice(state.powers, 'WIND_BALL'), 'run-lifetime ban failed');
+  prepareSingleBall(state);
+  assert(state.powers.bannedPowerIds.has('WIND_BALL') && state.powers.bansRemaining === 0, 'life replacement cleared ban state');
+  state.powers.pendingSelections = 3;
+  state.powers.currentChoices = [];
+  assert(prepareNextPowerSelection(state.powers), 'queued selection after ban failed');
+  assert(!state.powers.currentChoices.includes('WIND_BALL'), 'banned power returned in queued selection');
+
+  const restarted = createInitialGameState();
+  assert(restarted.powers.bansRemaining === GAME_CONFIG.powers.startingBans, 'restart did not restore starting bans');
+  assert(restarted.powers.bannedPowerIds.size === 0, 'restart retained banned powers');
 }
 
 function testPiercedBallKillProcs(): void {
@@ -148,6 +230,114 @@ function testPiercedBallKillProcs(): void {
     assert(state.projectiles.length === 1, `pierced kill ${kill + 1} missed Electric`);
     assert(state.fireEffects.length === 1, `pierced kill ${kill + 1} missed Fire`);
     assert(state.windEffects.length === 1, `pierced kill ${kill + 1} missed Wind`);
+  }
+}
+
+type PierceApproach = 'BOTTOM' | 'TOP' | 'LEFT_UPWARD' | 'LEFT_DOWNWARD' | 'RIGHT';
+
+function runPierceCollision(level: number, hp: number, approach: PierceApproach) {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  addBrick(state, makeBrick('pierce-target', 500, 300, hp));
+  state.powers.levels.PIERCING_BALL = level;
+  const ball = state.balls[0];
+  ball.pierceCharge = level;
+  let deltaSeconds = 0.05;
+  if (approach === 'BOTTOM') {
+    ball.x = 528; ball.y = 335; ball.velocity.x = 0; ball.velocity.y = -240;
+  } else if (approach === 'TOP') {
+    ball.x = 528; ball.y = 285; ball.velocity.x = 0; ball.velocity.y = 240;
+  } else if (approach === 'LEFT_UPWARD' || approach === 'LEFT_DOWNWARD') {
+    const horizontalSpeed = 200;
+    ball.x = 480; ball.y = approach === 'LEFT_UPWARD' ? 315 : 295;
+    ball.velocity.x = horizontalSpeed;
+    ball.velocity.y = Math.sqrt(GAME_CONFIG.ball.speed ** 2 - horizontalSpeed ** 2)
+      * (approach === 'LEFT_UPWARD' ? -1 : 1);
+    deltaSeconds = 0.06;
+  } else {
+    const horizontalSpeed = 200;
+    ball.x = 576; ball.y = 310;
+    ball.velocity.x = -horizontalSpeed;
+    ball.velocity.y = -Math.sqrt(GAME_CONFIG.ball.speed ** 2 - horizontalSpeed ** 2);
+    deltaSeconds = 0.06;
+  }
+  stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, deltaSeconds, deltaSeconds);
+  return { state, ball };
+}
+
+function testDirectionalPiercePassThrough(): void {
+  const bottom = runPierceCollision(1, 1, 'BOTTOM');
+  assert(!bottom.state.brickField.columns.flat().some(({ id }) => id === 'pierce-target'), 'bottom Pierce did not destroy 1 HP brick');
+  assert(bottom.ball.velocity.y < 0, 'bottom Pierce unexpectedly bounced');
+  assert(bottom.ball.pierceCharge === 0, 'bottom Pierce did not consume charge');
+
+  const top = runPierceCollision(1, 1, 'TOP');
+  assert(top.ball.velocity.y < 0, 'top Pierce passed through instead of bouncing');
+  assert(top.ball.pierceCharge === 1, 'top destructive bounce did not reload Pierce');
+
+  const leftUpward = runPierceCollision(1, 1, 'LEFT_UPWARD');
+  assert(leftUpward.ball.velocity.y < 0, 'side test no longer has upward vertical movement');
+  assert(leftUpward.ball.velocity.x > 0, 'upward-moving LEFT collision bounced instead of passing through');
+  assert(leftUpward.ball.pierceCharge === 0, 'LEFT pass-through did not consume Pierce');
+
+  const right = runPierceCollision(1, 1, 'RIGHT');
+  assert(right.ball.velocity.x < 0, 'RIGHT collision bounced instead of passing through');
+  assert(right.ball.pierceCharge === 0, 'RIGHT pass-through did not consume Pierce');
+
+  const leftDownward = runPierceCollision(1, 1, 'LEFT_DOWNWARD');
+  assert(leftDownward.ball.velocity.y > 0, 'downward side test lost downward movement');
+  assert(leftDownward.ball.velocity.x > 0, 'downward-moving side collision bounced instead of passing through');
+  assert(leftDownward.ball.pierceCharge === 0, 'downward side pass-through did not consume Pierce');
+
+  const insufficientSide = runPierceCollision(1, 2, 'LEFT_UPWARD');
+  assert(insufficientSide.ball.velocity.x < 0, 'insufficient side Pierce passed through');
+  assert(insufficientSide.ball.pierceCharge === 1, 'insufficient side Pierce did not reload');
+
+  const insufficientBottom = runPierceCollision(1, 2, 'BOTTOM');
+  assert(insufficientBottom.ball.velocity.y > 0, 'insufficient bottom Pierce passed through');
+  assert(insufficientBottom.ball.pierceCharge === 1, 'insufficient bottom Pierce did not reload');
+
+  const sufficientBottom = runPierceCollision(2, 2, 'BOTTOM');
+  assert(sufficientBottom.ball.velocity.y < 0, 'sufficient bottom Pierce bounced');
+  assert(sufficientBottom.ball.pierceCharge === 0, 'sufficient bottom Pierce consumed wrong charge');
+
+  const sufficientTop = runPierceCollision(2, 2, 'TOP');
+  assert(sufficientTop.ball.velocity.y < 0, 'sufficient top Pierce passed through instead of bouncing');
+  assert(sufficientTop.ball.pierceCharge === 2, 'sufficient top destructive bounce did not reload');
+
+  const highLevelTop = runPierceCollision(5, 1, 'TOP');
+  assert(highLevelTop.ball.velocity.y < 0, 'high-level top Pierce passed through');
+  assert(highLevelTop.ball.pierceCharge === 5, 'high-level top bounce did not reload');
+}
+
+function testDirectionalPierceBallKillProcs(): void {
+  for (const approach of ['BOTTOM', 'TOP', 'LEFT_UPWARD'] as PierceApproach[]) {
+    const state = createInitialGameState();
+    state.brickField.columns.forEach((column) => column.splice(0));
+    addBrick(state, makeBrick('entry-blocker', 42, 8));
+    addBrick(state, makeBrick('source', 500, 300));
+    addBrick(state, makeBrick('electric-target', 680, 300));
+    state.powers.levels.PIERCING_BALL = 1;
+    state.powers.levels.ELECTRIC_BALL = 1;
+    state.powers.levels.FIRE_BALL = 1;
+    state.powers.levels.WIND_BALL = 1;
+    const ball = state.balls[0];
+    ball.pierceCharge = 1;
+    let deltaSeconds = 0.05;
+    if (approach === 'BOTTOM') {
+      ball.x = 528; ball.y = 335; ball.velocity.x = 0; ball.velocity.y = -240;
+    } else if (approach === 'TOP') {
+      ball.x = 528; ball.y = 285; ball.velocity.x = 0; ball.velocity.y = 240;
+    } else {
+      ball.x = 480; ball.y = 315; ball.velocity.x = 200;
+      ball.velocity.y = -Math.sqrt(GAME_CONFIG.ball.speed ** 2 - 200 ** 2);
+      deltaSeconds = 0.06;
+    }
+    stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, deltaSeconds, deltaSeconds);
+    assert(state.projectiles.some(({ kind }) => kind === 'ELECTRIC'), `${approach} BALL kill missed Electric proc`);
+    assert(state.fireEffects.length === 1, `${approach} BALL kill missed Fire proc`);
+    assert(state.windEffects.length === 1, `${approach} BALL kill missed Wind proc`);
   }
 }
 
@@ -187,7 +377,7 @@ function testWindLevelsAndNoRecursion(): void {
 function testMultiballTargetSpeeds(): void {
   const expected = [240, 228, 216, 204, 192, 180, 180];
   for (let count = 1; count <= expected.length; count += 1) {
-    assertNear(getMultiballTargetSpeed(count), expected[count - 1], `${count}-ball target speed`);
+    assertNear(getBallTargetSpeed(count), expected[count - 1], `${count}-ball target speed`);
   }
 }
 
@@ -399,7 +589,12 @@ testElectricRanking();
 testWindRanking();
 testSpeeds();
 testOffersAndMaxPairs();
+testTargetedBanAndRerollResources();
+testOwnedBanAndNoReplacement();
+testBanRunLifetime();
 testPiercedBallKillProcs();
+testDirectionalPiercePassThrough();
+testDirectionalPierceBallKillProcs();
 testWindLevelsAndNoRecursion();
 testMultiballTargetSpeeds();
 testSplittingTuningAndAcquisition();

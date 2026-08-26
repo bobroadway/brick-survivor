@@ -6,6 +6,8 @@ import { RenderQualityManager } from '../rendering/RenderQualityManager';
 interface ChoiceVisual {
   background: Phaser.GameObjects.Rectangle;
   text: Phaser.GameObjects.Text;
+  banBackground: Phaser.GameObjects.Rectangle;
+  banText: Phaser.GameObjects.Text;
 }
 
 export class PowerChoiceOverlay {
@@ -23,6 +25,7 @@ export class PowerChoiceOverlay {
     renderQuality: RenderQualityManager,
     private readonly select: (id: PowerId) => void,
     private readonly reroll: () => void,
+    private readonly ban: (id: PowerId) => void,
   ) {
     this.container = scene.add.container(0, 0).setDepth(30).setVisible(false);
     this.container.add(scene.add.rectangle(0, 0, 1280, 720, 0x080a0f, 0.86).setOrigin(0));
@@ -32,16 +35,25 @@ export class PowerChoiceOverlay {
     this.container.add(this.title);
     for (let index = 0; index < 3; index += 1) {
       const x = 310 + index * 330;
-      const background = scene.add.rectangle(x, 330, 285, 260, 0x273243, 0.98)
+      const background = scene.add.rectangle(x, 315, 285, 235, 0x273243, 0.98)
         .setStrokeStyle(2, 0x53637a).setInteractive({ useHandCursor: true });
-      const text = renderQuality.addText(x, 330, '', {
+      const text = renderQuality.addText(x, 315, '', {
         align: 'center', color: '#e7ecf3', fontFamily: 'Arial, sans-serif', fontSize: '19px',
         wordWrap: { width: 245 },
       }).setOrigin(0.5);
       background.on(Phaser.Input.Events.POINTER_OVER, () => { this.focusIndex = index; this.refresh(); });
       background.on(Phaser.Input.Events.POINTER_DOWN, () => this.activateIndex(index));
-      this.choices.push({ background, text });
-      this.container.add([background, text]);
+      const banBackground = scene.add.rectangle(x, 458, 110, 34, 0x512f35, 0.98)
+        .setStrokeStyle(2, 0xa56570).setInteractive({ useHandCursor: true });
+      const banText = renderQuality.addText(x, 458, 'BAN', {
+        color: '#f3d9dc', fontFamily: 'Arial, sans-serif', fontSize: '15px', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      banBackground.on(Phaser.Input.Events.POINTER_DOWN, () => {
+        const id = this.state?.powers.currentChoices[index];
+        if (this.interactionEnabled && id) this.ban(id);
+      });
+      this.choices.push({ background, text, banBackground, banText });
+      this.container.add([background, text, banBackground, banText]);
     }
     this.rerollBackground = scene.add.rectangle(640, 525, 250, 48, 0x273243, 0.98)
       .setStrokeStyle(2, 0x53637a).setInteractive({ useHandCursor: true });
@@ -74,14 +86,17 @@ export class PowerChoiceOverlay {
     if (interactionEnabled) {
       this.refresh();
     } else {
-      for (const visual of this.choices) visual.background.disableInteractive();
+      for (const visual of this.choices) {
+        visual.background.disableInteractive();
+        visual.banBackground.disableInteractive();
+      }
       this.rerollBackground.disableInteractive();
     }
   }
 
   move(direction: -1 | 1): void {
     if (!this.state || !this.interactionEnabled) return;
-    const focusable = this.state.powers.currentChoices.map((_, index) => index);
+    const focusable = this.state.powers.currentChoices.flatMap((id, index) => id ? [index] : []);
     if (this.state.powers.rerollsRemaining > 0) focusable.push(3);
     if (focusable.length === 0) return;
     const current = Math.max(0, focusable.indexOf(this.focusIndex));
@@ -106,9 +121,18 @@ export class PowerChoiceOverlay {
       const id = this.state.powers.currentChoices[index];
       visual.background.setVisible(Boolean(id));
       visual.text.setVisible(Boolean(id));
-      if (!id) { visual.background.disableInteractive(); continue; }
+      const showBan = Boolean(id) && this.state.powers.bansRemaining > 0;
+      visual.banBackground.setVisible(showBan);
+      visual.banText.setVisible(showBan);
+      if (!id) {
+        visual.background.disableInteractive();
+        visual.banBackground.disableInteractive();
+        continue;
+      }
       if (this.interactionEnabled) visual.background.setInteractive({ useHandCursor: true });
       else visual.background.disableInteractive();
+      if (this.interactionEnabled && showBan) visual.banBackground.setInteractive({ useHandCursor: true });
+      else visual.banBackground.disableInteractive();
       const definition = getPowerDefinition(id);
       const nextLevel = getPowerLevel(this.state.powers, id) + 1;
       visual.text.setText(`${definition.name}\n\nLv${nextLevel}\n\n${getPowerDescription(id, nextLevel, true)}`);

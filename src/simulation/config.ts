@@ -17,8 +17,8 @@ export const GAME_CONFIG = {
   ball: {
     radius: 9,
     speed: 240,
-    multiballSlowdownPerExtraBall: 0.05,
-    multiballMaximumSlowdown: 0.25,
+    speedAssistPercentageStep: 0.05,
+    speedAssistMaximumPercentage: 0.25,
     multiballSpeedTransitionDurationSeconds: 1,
     spawnGap: 28,
     initialHorizontalRatio: 0.34,
@@ -60,6 +60,9 @@ export const GAME_CONFIG = {
     baseSpeedRange: 3,
     speedRangeGrowthPerLevel: 0.5,
     speedClassRangePositions: { SLOW: 0, MEDIUM: 1 / 3, FAST: 2 / 3, RUSH: 1 },
+    brickPressureAssistGraceSeconds: 5,
+    brickPressureAssistMaximumLevels: 5,
+    brickPressureAssistLevelsPerSecond: 1,
   },
   progression: {
     startingLevel: 1,
@@ -75,6 +78,7 @@ export const GAME_CONFIG = {
     maxOwned: 5,
     offerCount: 3,
     startingRerolls: 1,
+    startingBans: 1,
     offerSeed: 0xc01dcafe,
     gunShotIntervalSeconds: 0.1,
     gunReloadSeconds: 4,

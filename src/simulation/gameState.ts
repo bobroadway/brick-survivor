@@ -1,5 +1,10 @@
 import { GAME_CONFIG } from './config';
 import { spawnBallsFromParent } from './ballSpawning';
+import {
+  createBrickPressureAssistState,
+  recordBallPaddleContact,
+  type BrickPressureAssistState,
+} from './brickPressureAssist';
 import { createBrickField, type BrickFieldState } from './brickField';
 import { createRunProgression, type RunProgressionState } from './progression';
 import { createRunPowerState, getPowerLevel, type RunPowerState } from './powers';
@@ -42,6 +47,7 @@ export interface GameState {
   fireEffects: FireEffectState[];
   windEffects: WindEffectState[];
   nextProjectileId: number;
+  brickPressureAssist: BrickPressureAssistState;
 }
 
 export function createInitialGameState(): GameState {
@@ -73,6 +79,7 @@ export function createInitialGameState(): GameState {
     fireEffects: [],
     windEffects: [],
     nextProjectileId: 1,
+    brickPressureAssist: createBrickPressureAssistState(),
   };
 }
 
@@ -101,4 +108,5 @@ export function prepareSingleBall(state: GameState): void {
     speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,
   }];
   state.nextBallId += 1;
+  recordBallPaddleContact(state.brickPressureAssist);
 }

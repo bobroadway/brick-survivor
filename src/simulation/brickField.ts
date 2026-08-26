@@ -165,12 +165,13 @@ export function getBrickFailureBoundaryY(): number {
 export function advanceBrickField(
   field: BrickFieldState,
   deltaSeconds: number,
-  difficultyLevel: number = GAME_CONFIG.progression.startingLevel,
+  densityLevel: number = GAME_CONFIG.progression.startingLevel,
+  speedLevel: number = densityLevel,
 ): boolean {
   for (const column of field.columns) {
     for (let index = column.length - 1; index >= 0; index -= 1) {
       const brick = column[index];
-      const descentSpeed = resolveBrickDescentSpeed(brick.speedClass, difficultyLevel);
+      const descentSpeed = resolveBrickDescentSpeed(brick.speedClass, speedLevel);
       let nextY = brick.y + descentSpeed * deltaSeconds;
       const brickBelow = column[index + 1];
       if (brickBelow) {
@@ -191,7 +192,7 @@ export function advanceBrickField(
   }
 
   if (hasFormationEntryClearance(field)) {
-    generateFormation(field, getBrickSpawnY(), true, difficultyLevel);
+    generateFormation(field, getBrickSpawnY(), true, densityLevel);
   }
   return false;
 }

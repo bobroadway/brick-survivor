@@ -18,8 +18,10 @@ export interface RunPowerState {
   ownedOrder: PowerId[];
   maxedPowerOrder: PowerId[];
   rerollsRemaining: number;
+  bansRemaining: number;
+  bannedPowerIds: Set<PowerId>;
   pendingSelections: number;
-  currentChoices: PowerId[];
+  currentChoices: Array<PowerId | null>;
   offerGeneratorState: number;
   splitTimerSeconds: number;
   gunShotCooldownSeconds: number;
@@ -86,7 +88,9 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
 
 export function createRunPowerState(): RunPowerState {
   return {
-    levels: {}, ownedOrder: [], maxedPowerOrder: [], rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
+    levels: {}, ownedOrder: [], maxedPowerOrder: [],
+    rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
+    bansRemaining: GAME_CONFIG.powers.startingBans, bannedPowerIds: new Set<PowerId>(),
     pendingSelections: 0, currentChoices: [], offerGeneratorState: GAME_CONFIG.powers.offerSeed >>> 0,
     splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunVolleysRemaining: 0,
     missileLaunchCooldownSeconds: 0, missileReloadSeconds: 0,
@@ -116,6 +120,7 @@ export function getEligiblePowerIds(powers: RunPowerState): PowerId[] {
   return POWER_DEFINITIONS
     .filter(({ enabledInOfferPool }) => enabledInOfferPool)
     .map(({ id }) => id)
+    .filter((id) => !powers.bannedPowerIds.has(id))
     .filter((id) => {
       const level = getPowerLevel(powers, id);
       return level < GAME_CONFIG.powers.maxLevel && (level > 0 || !atOwnershipCap);
@@ -168,6 +173,28 @@ export function rerollPowerChoices(powers: RunPowerState): boolean {
   }
   powers.rerollsRemaining -= 1;
   powers.currentChoices = next;
+  return true;
+}
+
+export function banPowerChoice(powers: RunPowerState, id: PowerId): boolean {
+  if (powers.bansRemaining <= 0 || powers.bannedPowerIds.has(id)) return false;
+  const slot = powers.currentChoices.indexOf(id);
+  if (slot < 0) return false;
+
+  powers.bannedPowerIds.add(id);
+  powers.bansRemaining -= 1;
+  const displayedElsewhere = new Set(
+    powers.currentChoices.filter((choice, index): choice is PowerId => index !== slot && choice !== null),
+  );
+  const eligible = getEligiblePowerIds(powers).filter((candidate) => !displayedElsewhere.has(candidate));
+  powers.currentChoices[slot] = eligible.length > 0
+    ? eligible[Math.floor(nextOfferRandom(powers) * eligible.length)]
+    : null;
+
+  if (!powers.currentChoices.some((choice) => choice !== null)) {
+    powers.pendingSelections = Math.max(0, powers.pendingSelections - 1);
+    prepareNextPowerSelection(powers);
+  }
   return true;
 }
 

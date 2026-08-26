@@ -4,7 +4,13 @@ import { GAME_CONFIG } from '../../simulation/config';
 import { getBrickDescentSpeedRange } from '../../simulation/difficulty';
 import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
-import { acquirePower, prepareNextPowerSelection, rerollPowerChoices, type PowerId } from '../../simulation/powers';
+import {
+  acquirePower,
+  banPowerChoice,
+  prepareNextPowerSelection,
+  rerollPowerChoices,
+  type PowerId,
+} from '../../simulation/powers';
 import {
   getBallSpeed,
   SimulationStepOutcome,
@@ -129,6 +135,7 @@ export class GameScene extends Phaser.Scene {
       this, this.renderQuality,
       (id) => this.selectPower(id),
       () => this.rerollPowers(),
+      (id) => this.banPower(id),
     );
     this.buildOverlay = new BuildOverlay(this, this.renderQuality);
     if (window.desktop) {
@@ -338,6 +345,16 @@ export class GameScene extends Phaser.Scene {
   private rerollPowers(): void {
     if (this.session.phase !== GamePhase.LevelUp || !rerollPowerChoices(this.state.powers)) return;
     this.powerChoiceOverlay.show(this.state);
+  }
+
+  private banPower(id: PowerId): void {
+    if (this.session.phase !== GamePhase.LevelUp || !banPowerChoice(this.state.powers, id)) return;
+    if (this.state.powers.currentChoices.some((choice) => choice !== null)) {
+      this.powerChoiceOverlay.show(this.state);
+      return;
+    }
+    beginLevelUpSpeedup(this.session);
+    this.applyPhasePresentation();
   }
 
   private continueLifeLostAttempt(): void {

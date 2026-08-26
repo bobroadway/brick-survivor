@@ -1,6 +1,11 @@
 import { GAME_CONFIG } from './config';
 import { advanceBrickField, type BrickState } from './brickField';
 import {
+  advanceBrickPressureAssist,
+  getEffectiveBrickSpeedLevel,
+  recordBallPaddleContact,
+} from './brickPressureAssist';
+import {
   applyBrickDamage,
   isBallKill,
   type BrickDestruction,
@@ -25,22 +30,41 @@ export function getBallSpeed(ball: BallState): number {
   return Math.hypot(ball.velocity.x, ball.velocity.y);
 }
 
-export function getMultiballTargetSpeed(activeBallCount: number): number {
+export function getMultiballSlowdown(activeBallCount: number): number {
   const config = GAME_CONFIG.ball;
   const additionalBalls = Math.max(0, Math.floor(activeBallCount) - 1);
-  const slowdown = Math.min(
-    config.multiballMaximumSlowdown,
-    config.multiballSlowdownPerExtraBall * additionalBalls,
+  return Math.min(
+    config.speedAssistMaximumPercentage,
+    config.speedAssistPercentageStep * additionalBalls,
   );
-  return config.speed * (1 - slowdown);
+}
+
+export function getCombinedBallSpeedMultiplier(
+  activeBallCount: number,
+  trappedBallSpeedBoost: number,
+): number {
+  return 1 - getMultiballSlowdown(activeBallCount) + Math.max(
+    0,
+    Math.min(GAME_CONFIG.ball.speedAssistMaximumPercentage, trappedBallSpeedBoost),
+  );
+}
+
+export function getBallTargetSpeed(activeBallCount: number, trappedBallSpeedBoost = 0): number {
+  return GAME_CONFIG.ball.speed
+    * getCombinedBallSpeedMultiplier(activeBallCount, trappedBallSpeedBoost);
 }
 
 function updateBallSpeedAssist(ball: BallState, targetSpeed: number, deltaSeconds: number): void {
   const currentSpeed = getBallSpeed(ball);
   if (ball.speedAssistTarget !== targetSpeed) {
-    ball.speedAssistStart = currentSpeed;
+    const continuousTargetChange = GAME_CONFIG.ball.speed
+      * GAME_CONFIG.ball.speedAssistPercentageStep
+      * deltaSeconds * 1.01;
+    if (Math.abs(ball.speedAssistTarget - targetSpeed) > continuousTargetChange) {
+      ball.speedAssistStart = currentSpeed;
+      ball.speedAssistElapsedSeconds = 0;
+    }
     ball.speedAssistTarget = targetSpeed;
-    ball.speedAssistElapsedSeconds = 0;
   }
   if (currentSpeed <= Number.EPSILON) return;
   ball.speedAssistElapsedSeconds = Math.min(
@@ -411,24 +435,56 @@ function overlapsBrick(ball: BallState, brick: BrickState): boolean {
   return (ball.x - closestX) ** 2 + (ball.y - closestY) ** 2 <= ball.radius ** 2;
 }
 
-function collideWithBrick(ball: BallState, brick: BrickState, previousX: number, previousY: number): void {
+type BrickCollisionFace = 'TOP' | 'BOTTOM' | 'LEFT' | 'RIGHT';
+interface BrickCollisionResolution { face: BrickCollisionFace; penetrationFallback: boolean }
+
+function resolveBrickCollisionFace(
+  ball: BallState,
+  brick: BrickState,
+  previousX: number,
+  previousY: number,
+): BrickCollisionResolution {
   const left = brick.x - ball.radius;
   const right = brick.x + brick.width + ball.radius;
   const top = brick.y - ball.radius;
   const bottom = brick.y + brick.height + ball.radius;
-  if (previousY <= top && ball.y > top) {
-    ball.y = top; ball.velocity.y = -Math.abs(ball.velocity.y);
-  } else if (previousY >= bottom && ball.y < bottom) {
-    ball.y = bottom; ball.velocity.y = Math.abs(ball.velocity.y);
-  } else if (previousX <= left && ball.x > left) {
-    ball.x = left; ball.velocity.x = -Math.abs(ball.velocity.x);
-  } else if (previousX >= right && ball.x < right) {
-    ball.x = right; ball.velocity.x = Math.abs(ball.velocity.x);
-  } else {
-    const horizontalPenetration = Math.min(Math.abs(ball.x - left), Math.abs(right - ball.x));
-    const verticalPenetration = Math.min(Math.abs(ball.y - top), Math.abs(bottom - ball.y));
-    if (horizontalPenetration < verticalPenetration) ball.velocity.x *= -1;
+  if (previousY <= top && ball.y > top) return { face: 'TOP', penetrationFallback: false };
+  if (previousY >= bottom && ball.y < bottom) return { face: 'BOTTOM', penetrationFallback: false };
+  if (previousX <= left && ball.x > left) return { face: 'LEFT', penetrationFallback: false };
+  if (previousX >= right && ball.x < right) return { face: 'RIGHT', penetrationFallback: false };
+  const horizontalPenetration = Math.min(Math.abs(ball.x - left), Math.abs(right - ball.x));
+  const verticalPenetration = Math.min(Math.abs(ball.y - top), Math.abs(bottom - ball.y));
+  if (horizontalPenetration < verticalPenetration) {
+    return {
+      face: Math.abs(ball.x - left) <= Math.abs(right - ball.x) ? 'LEFT' : 'RIGHT',
+      penetrationFallback: true,
+    };
+  }
+  return {
+    face: Math.abs(ball.y - top) <= Math.abs(bottom - ball.y) ? 'TOP' : 'BOTTOM',
+    penetrationFallback: true,
+  };
+}
+
+function bounceFromBrickFace(ball: BallState, brick: BrickState, resolution: BrickCollisionResolution): void {
+  const { face } = resolution;
+  if (resolution.penetrationFallback) {
+    if (face === 'LEFT' || face === 'RIGHT') ball.velocity.x *= -1;
     else ball.velocity.y *= -1;
+    return;
+  }
+  if (face === 'TOP') {
+    ball.y = brick.y - ball.radius;
+    ball.velocity.y = -Math.abs(ball.velocity.y);
+  } else if (face === 'BOTTOM') {
+    ball.y = brick.y + brick.height + ball.radius;
+    ball.velocity.y = Math.abs(ball.velocity.y);
+  } else if (face === 'LEFT') {
+    ball.x = brick.x - ball.radius;
+    ball.velocity.x = -Math.abs(ball.velocity.x);
+  } else {
+    ball.x = brick.x + brick.width + ball.radius;
+    ball.velocity.x = Math.abs(ball.velocity.x);
   }
 }
 
@@ -458,6 +514,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
     const hitOffset = (ball.x - paddle.x) / (paddle.width / 2);
     setBallDirection(ball, hitOffset * GAME_CONFIG.ball.maxHorizontalRatio, true);
     ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+    recordBallPaddleContact(state.brickPressureAssist);
   }
 
   let collided = false;
@@ -465,13 +522,17 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
     for (const brick of column) {
       if (!overlapsBrick(ball, brick)) continue;
       const brickHp = brick.hp;
-      if (ball.pierceCharge >= brickHp && ball.pierceCharge > 0) {
+      const collisionResolution = resolveBrickCollisionFace(ball, brick, previousX, previousY);
+      const canPierceThrough = collisionResolution.face !== 'TOP'
+        && ball.pierceCharge >= brickHp
+        && ball.pierceCharge > 0;
+      if (canPierceThrough) {
         ball.pierceCharge -= brickHp;
         handleBallKill(state, applyBrickDamage(state, brick, brickHp, 'BALL'));
       } else {
         const pierceDamage = Math.min(ball.pierceCharge, Math.max(0, brickHp - 1));
         ball.pierceCharge = 0;
-        collideWithBrick(ball, brick, previousX, previousY);
+        bounceFromBrickFace(ball, brick, collisionResolution);
         handleBallKill(state, applyBrickDamage(state, brick, 1 + pierceDamage, 'BALL'));
         ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
       }
@@ -502,7 +563,17 @@ export function stepSimulation(
   worldDeltaSeconds: number = playerDeltaSeconds,
 ): SimulationStepOutcome {
   updatePaddle(state, input, playerDeltaSeconds);
-  if (advanceBrickField(state.brickField, worldDeltaSeconds, state.progression.level)) {
+  advanceBrickPressureAssist(state.brickPressureAssist, worldDeltaSeconds);
+  const effectiveBrickSpeedLevel = getEffectiveBrickSpeedLevel(
+    state.progression.level,
+    state.brickPressureAssist,
+  );
+  if (advanceBrickField(
+    state.brickField,
+    worldDeltaSeconds,
+    state.progression.level,
+    effectiveBrickSpeedLevel,
+  )) {
     return SimulationStepOutcome.BrickOverflow;
   }
   updateGun(state, worldDeltaSeconds);
@@ -511,7 +582,10 @@ export function stepSimulation(
   updateProjectiles(state, worldDeltaSeconds);
   updateFireEffects(state, worldDeltaSeconds);
   updateWindEffects(state, worldDeltaSeconds);
-  const targetBallSpeed = getMultiballTargetSpeed(state.balls.length);
+  const targetBallSpeed = getBallTargetSpeed(
+    state.balls.length,
+    state.brickPressureAssist.trappedBallSpeedBoost,
+  );
   for (let index = state.balls.length - 1; index >= 0; index -= 1) {
     updateBallSpeedAssist(state.balls[index], targetBallSpeed, worldDeltaSeconds);
     if (updateBall(state, state.balls[index], worldDeltaSeconds)) state.balls.splice(index, 1);
