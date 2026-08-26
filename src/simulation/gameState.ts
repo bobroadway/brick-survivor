@@ -17,13 +17,16 @@ export interface BallState extends Vector2 {
   speedAssistTarget: number;
   speedAssistElapsedSeconds: number;
 }
-export type ProjectileKind = 'GUN' | 'ELECTRIC';
+export type ProjectileKind = 'GUN' | 'ELECTRIC' | 'MISSILE';
 export interface ProjectileState extends Vector2 {
   id: number;
   kind: ProjectileKind;
   velocity: Vector2;
   damage: number;
   targetBrickId?: string;
+  missilePhase?: 'DEPLOYING' | 'SEARCHING' | 'HOMING';
+  deploymentRemainingSeconds?: number;
+  homingSpeed?: number;
 }
 export interface FireEffectState { x1: number; x2: number; y: number; remainingSeconds: number }
 export interface WindEffectState { x: number; y1: number; y2: number; remainingSeconds: number }

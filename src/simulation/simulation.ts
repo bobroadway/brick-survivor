@@ -6,7 +6,7 @@ import {
   type BrickDestruction,
 } from './combat';
 import { spawnSplitBalls, type BallState, type GameState } from './gameState';
-import { rankElectricTargets, selectWindTargets } from './powerTargeting';
+import { rankElectricTargets, selectMissileTarget, selectWindTargets } from './powerTargeting';
 import { getPowerLevel } from './powers';
 
 export interface SimulationInput {
@@ -182,6 +182,47 @@ function updateGun(state: GameState, deltaSeconds: number): void {
   else powers.gunReloadSeconds = GAME_CONFIG.powers.gunReloadSeconds;
 }
 
+function launchMissile(state: GameState): void {
+  const powers = state.powers;
+  const offset = GAME_CONFIG.powers.missileLaunchOffsets[powers.missileLaunchIndex] ?? 0;
+  state.projectiles.push({
+    id: state.nextProjectileId++,
+    kind: 'MISSILE',
+    x: state.paddle.x + state.paddle.width * offset,
+    y: state.paddle.y - state.paddle.height / 2,
+    velocity: { x: 0, y: -GAME_CONFIG.powers.missileDeploymentSpeed },
+    damage: 1,
+    missilePhase: 'DEPLOYING',
+    deploymentRemainingSeconds: GAME_CONFIG.powers.missileDeploymentDurationSeconds,
+    homingSpeed: GAME_CONFIG.powers.missileHomingInitialSpeed,
+  });
+  powers.missileLaunchIndex += 1;
+}
+
+function updateMissileFiring(state: GameState, deltaSeconds: number): void {
+  const level = getPowerLevel(state.powers, 'HOMING_MISSILE');
+  if (level === 0) return;
+  const powers = state.powers;
+  if (powers.missileReloadSeconds > 0) {
+    powers.missileReloadSeconds = Math.max(0, powers.missileReloadSeconds - deltaSeconds);
+    if (powers.missileReloadSeconds > 0) return;
+    powers.missilesRemainingInVolley = level;
+    powers.missileLaunchIndex = 0;
+    powers.missileLaunchCooldownSeconds = 0;
+  }
+  powers.missileLaunchCooldownSeconds = Math.max(0, powers.missileLaunchCooldownSeconds - deltaSeconds);
+  if (powers.missilesRemainingInVolley <= 0 || powers.missileLaunchCooldownSeconds > 0) return;
+  launchMissile(state);
+  powers.missilesRemainingInVolley -= 1;
+  if (powers.missilesRemainingInVolley > 0) {
+    powers.missileLaunchCooldownSeconds = level === GAME_CONFIG.powers.maxLevel
+      ? GAME_CONFIG.powers.missileLevelFiveLaunchIntervalSeconds
+      : GAME_CONFIG.powers.missileLaunchIntervalSeconds;
+  } else {
+    powers.missileReloadSeconds = GAME_CONFIG.powers.missileReloadSeconds;
+  }
+}
+
 function updateSplitting(state: GameState, deltaSeconds: number): void {
   const level = getPowerLevel(state.powers, 'SPLITTING_BALL');
   if (level === 0 || state.balls.length === 0) return;
@@ -194,9 +235,122 @@ function updateSplitting(state: GameState, deltaSeconds: number): void {
   }
 }
 
+function findSweptProjectileHit(
+  state: GameState,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  radius: number,
+): BrickState | undefined {
+  const dx = endX - startX;
+  const dy = endY - startY;
+  let closest: BrickState | undefined;
+  let closestTime = Number.POSITIVE_INFINITY;
+  for (const column of state.brickField.columns) {
+    for (const brick of column) {
+      const minX = brick.x - radius;
+      const maxX = brick.x + brick.width + radius;
+      const minY = brick.y - radius;
+      const maxY = brick.y + brick.height + radius;
+      let entry = 0;
+      let exit = 1;
+      for (const [origin, movement, minimum, maximum] of [
+        [startX, dx, minX, maxX],
+        [startY, dy, minY, maxY],
+      ] as const) {
+        if (Math.abs(movement) <= Number.EPSILON) {
+          if (origin < minimum || origin > maximum) { entry = 1; exit = 0; break; }
+          continue;
+        }
+        const first = (minimum - origin) / movement;
+        const second = (maximum - origin) / movement;
+        entry = Math.max(entry, Math.min(first, second));
+        exit = Math.min(exit, Math.max(first, second));
+      }
+      if (entry <= exit && entry < closestTime) {
+        closest = brick;
+        closestTime = entry;
+      }
+    }
+  }
+  return closest;
+}
+
+function acquireMissileTarget(state: GameState, projectileId: number, missileX: number): BrickState | undefined {
+  const reserved = new Set<string>();
+  for (const projectile of state.projectiles) {
+    if (projectile.id !== projectileId && projectile.kind === 'MISSILE' && projectile.targetBrickId) {
+      reserved.add(projectile.targetBrickId);
+    }
+  }
+  return selectMissileTarget(missileX, state.brickField.columns.flat(), reserved);
+}
+
+function steerMissileToward(projectile: GameState['projectiles'][number], target: BrickState, deltaSeconds: number): void {
+  const currentAngle = Math.atan2(projectile.velocity.y, projectile.velocity.x);
+  const desiredAngle = Math.atan2(
+    target.y + target.height / 2 - projectile.y,
+    target.x + target.width / 2 - projectile.x,
+  );
+  let angleDifference = desiredAngle - currentAngle;
+  while (angleDifference > Math.PI) angleDifference -= Math.PI * 2;
+  while (angleDifference < -Math.PI) angleDifference += Math.PI * 2;
+  const maximumTurn = GAME_CONFIG.powers.missileTurnRateRadiansPerSecond * deltaSeconds;
+  const heading = currentAngle + Math.max(-maximumTurn, Math.min(maximumTurn, angleDifference));
+  projectile.homingSpeed = Math.min(
+    GAME_CONFIG.powers.missileHomingMaximumSpeed,
+    (projectile.homingSpeed ?? GAME_CONFIG.powers.missileHomingInitialSpeed)
+      + GAME_CONFIG.powers.missileHomingAcceleration * deltaSeconds,
+  );
+  projectile.velocity.x = Math.cos(heading) * projectile.homingSpeed;
+  projectile.velocity.y = Math.sin(heading) * projectile.homingSpeed;
+}
+
+function updateMissile(state: GameState, projectile: GameState['projectiles'][number], deltaSeconds: number): boolean {
+  if (projectile.missilePhase === 'DEPLOYING') {
+    projectile.deploymentRemainingSeconds = Math.max(0, (projectile.deploymentRemainingSeconds ?? 0) - deltaSeconds);
+    if (projectile.deploymentRemainingSeconds === 0) projectile.missilePhase = 'SEARCHING';
+  }
+  if (projectile.missilePhase !== 'DEPLOYING') {
+    let target = projectile.targetBrickId ? findBrickById(state, projectile.targetBrickId) : undefined;
+    if (!target) {
+      projectile.targetBrickId = undefined;
+      target = acquireMissileTarget(state, projectile.id, projectile.x);
+      if (target) {
+        projectile.targetBrickId = target.id;
+        projectile.missilePhase = 'HOMING';
+        if (!projectile.homingSpeed) projectile.homingSpeed = GAME_CONFIG.powers.missileHomingInitialSpeed;
+      } else {
+        projectile.missilePhase = 'SEARCHING';
+        projectile.velocity.x = 0;
+        projectile.velocity.y = -GAME_CONFIG.powers.missileDeploymentSpeed;
+      }
+    }
+    if (target) steerMissileToward(projectile, target, deltaSeconds);
+  }
+
+  const previousX = projectile.x;
+  const previousY = projectile.y;
+  projectile.x += projectile.velocity.x * deltaSeconds;
+  projectile.y += projectile.velocity.y * deltaSeconds;
+  const hit = findSweptProjectileHit(
+    state, previousX, previousY, projectile.x, projectile.y, GAME_CONFIG.powers.missileCollisionRadius,
+  );
+  if (hit) {
+    applyBrickDamage(state, hit, projectile.damage, 'MISSILE');
+    return true;
+  }
+  return projectile.y + GAME_CONFIG.powers.missileCollisionRadius < GAME_CONFIG.playfield.top;
+}
+
 function updateProjectiles(state: GameState, deltaSeconds: number): void {
   for (let index = state.projectiles.length - 1; index >= 0; index -= 1) {
     const projectile = state.projectiles[index];
+    if (projectile.kind === 'MISSILE') {
+      if (updateMissile(state, projectile, deltaSeconds)) state.projectiles.splice(index, 1);
+      continue;
+    }
     if (projectile.kind === 'ELECTRIC') {
       const target = projectile.targetBrickId ? findBrickById(state, projectile.targetBrickId) : undefined;
       if (!target) { state.projectiles.splice(index, 1); continue; }
@@ -352,6 +506,7 @@ export function stepSimulation(
     return SimulationStepOutcome.BrickOverflow;
   }
   updateGun(state, worldDeltaSeconds);
+  updateMissileFiring(state, worldDeltaSeconds);
   updateSplitting(state, worldDeltaSeconds);
   updateProjectiles(state, worldDeltaSeconds);
   updateFireEffects(state, worldDeltaSeconds);

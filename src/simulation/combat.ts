@@ -2,7 +2,7 @@ import { damageBrick, type BrickState } from './brickField';
 import type { GameState } from './gameState';
 import { awardRunXp } from './progression';
 
-export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND';
+export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND' | 'MISSILE';
 
 export interface BrickDestruction {
   source: DamageSource;

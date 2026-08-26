@@ -11,7 +11,12 @@ import {
   prepareNextPowerSelection,
   type PowerId,
 } from '../src/simulation/powers';
-import { rankElectricTargets, rankWindTargets, selectWindTargets } from '../src/simulation/powerTargeting';
+import {
+  rankElectricTargets,
+  rankWindTargets,
+  selectMissileTarget,
+  selectWindTargets,
+} from '../src/simulation/powerTargeting';
 import { resolveBrickDescentSpeed, type BrickSpeedClass } from '../src/simulation/difficulty';
 import { getMultiballTargetSpeed, stepSimulation } from '../src/simulation/simulation';
 
@@ -37,7 +42,7 @@ function addBrick(state: ReturnType<typeof createInitialGameState>, brick: Brick
 function testBallKillCategory(): void {
   const source: BrickDestruction = { source: 'BALL', x: 0, y: 0, width: 56, height: 20 };
   assert(isBallKill(source), 'BALL destruction must qualify');
-  for (const damageSource of ['GUN', 'ELECTRIC', 'FIRE', 'WIND'] as DamageSource[]) {
+  for (const damageSource of ['GUN', 'ELECTRIC', 'FIRE', 'WIND', 'MISSILE'] as DamageSource[]) {
     assert(!isBallKill({ ...source, source: damageSource }), `${damageSource} must not qualify`);
   }
 }
@@ -99,7 +104,7 @@ function acquireToMax(state: ReturnType<typeof createInitialGameState>, id: Powe
 function testOffersAndMaxPairs(): void {
   const powers = createRunPowerState();
   const eligible = getEligiblePowerIds(powers);
-  assert(eligible.join(',') === 'GUN,PIERCING_BALL,SPLITTING_BALL,ELECTRIC_BALL,FIRE_BALL,WIND_BALL', 'active offer pool mismatch');
+  assert(eligible.join(',') === 'GUN,PIERCING_BALL,SPLITTING_BALL,ELECTRIC_BALL,FIRE_BALL,WIND_BALL,HOMING_MISSILE', 'active offer pool mismatch');
   assert(!eligible.includes('PADDLE_SIZE'), 'Paddle Size must be disabled');
   const appearances = new Map<PowerId, number>();
   for (let draw = 0; draw < 600; draw += 1) {
@@ -108,11 +113,11 @@ function testOffersAndMaxPairs(): void {
     for (const id of powers.currentChoices) appearances.set(id, (appearances.get(id) ?? 0) + 1);
     powers.currentChoices = [];
   }
-  for (const id of eligible) assert((appearances.get(id) ?? 0) > 250, `${id} offer frequency unexpectedly low`);
+  for (const id of eligible) assert((appearances.get(id) ?? 0) > 200, `${id} offer frequency unexpectedly low`);
 
   const state = createInitialGameState();
-  for (const id of ['GUN', 'FIRE_BALL', 'ELECTRIC_BALL', 'WIND_BALL'] as PowerId[]) acquireToMax(state, id);
-  assert(state.powers.maxedPowerOrder.join(',') === 'GUN,FIRE_BALL,ELECTRIC_BALL,WIND_BALL', 'MAX order mismatch');
+  for (const id of ['GUN', 'FIRE_BALL', 'ELECTRIC_BALL', 'WIND_BALL', 'HOMING_MISSILE'] as PowerId[]) acquireToMax(state, id);
+  assert(state.powers.maxedPowerOrder.join(',') === 'GUN,FIRE_BALL,ELECTRIC_BALL,WIND_BALL,HOMING_MISSILE', 'MAX order mismatch');
   assert(JSON.stringify(getMaxedPowerPairs(state.powers)) === JSON.stringify([['GUN', 'FIRE_BALL'], ['ELECTRIC_BALL', 'WIND_BALL']]), 'MAX pairs mismatch');
   state.powers.currentChoices = ['GUN'];
   assert(!acquirePower(state, 'GUN'), 'MAX power must not reacquire');
@@ -232,6 +237,163 @@ function testGunCadence(): void {
   assertNear(state.powers.gunReloadSeconds, 4, 'Gun reload duration');
 }
 
+function testMissileTargetPriority(): void {
+  const tiedNear = makeBrick('tied-near', 500, 400);
+  const tiedFar = makeBrick('tied-far', 700, 400);
+  const higher = makeBrick('higher', 500, 300);
+  assert(selectMissileTarget(520, [higher, tiedFar, tiedNear], new Set())?.id === 'tied-near', 'missile did not choose lowest/nearest brick');
+  assert(selectMissileTarget(628, [tiedFar, tiedNear], new Set())?.id === 'tied-far', 'missile ID tie-break was not deterministic');
+  assert(selectMissileTarget(520, [tiedNear, higher], new Set(['tied-near']))?.id === 'higher', 'missile selected a reserved target');
+}
+
+function collectMissileLaunches(level: number): Array<{ time: number; x: number }> {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  state.paddle.x = 600;
+  state.paddle.width = 200;
+  state.powers.levels.HOMING_MISSILE = level;
+  state.powers.missilesRemainingInVolley = level;
+  const launches: Array<{ time: number; x: number }> = [];
+  let lastId = 0;
+  for (let step = 0; step < 240 && launches.length < level; step += 1) {
+    stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 1 / 120, 1 / 120);
+    for (const projectile of state.projectiles) {
+      if (projectile.kind === 'MISSILE' && projectile.id > lastId) {
+        launches.push({ time: step / 120, x: projectile.x });
+        lastId = projectile.id;
+      }
+    }
+  }
+  assertNear(state.powers.missileReloadSeconds, GAME_CONFIG.powers.missileReloadSeconds, `Missile Lv${level} reload`);
+  return launches;
+}
+
+function testMissileLaunchPositionsAndCadence(): void {
+  for (const level of [1, 2, 3, 4, 5]) {
+    const launches = collectMissileLaunches(level);
+    const expectedOffsets = GAME_CONFIG.powers.missileLaunchOffsets.slice(0, level);
+    assert(launches.length === level, `Missile Lv${level} launch count mismatch`);
+    launches.forEach((launch, index) => assertNear(launch.x, 600 + 200 * expectedOffsets[index], `Missile Lv${level} launch ${index + 1} mount`));
+    const interval = level === 5
+      ? GAME_CONFIG.powers.missileLevelFiveLaunchIntervalSeconds
+      : GAME_CONFIG.powers.missileLaunchIntervalSeconds;
+    for (let index = 1; index < launches.length; index += 1) {
+      assert(Math.abs(launches[index].time - launches[index - 1].time - interval) <= GAME_CONFIG.fixedStepSeconds + 1e-9, `Missile Lv${level} cadence mismatch`);
+    }
+  }
+}
+
+function testMissileDeploymentReservationsAndRetargeting(): void {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('lowest-a', 500, 300));
+  addBrick(state, makeBrick('next-b', 620, 260));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  state.powers.levels.HOMING_MISSILE = 2;
+  state.powers.missilesRemainingInVolley = 2;
+  const input = { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 };
+  for (let step = 0; step < 92; step += 1) stepSimulation(state, input, 1 / 120, 1 / 120);
+  const missiles = state.projectiles.filter((projectile) => projectile.kind === 'MISSILE');
+  assert(missiles.length === 2, 'two-missile deployment did not remain active');
+  assert(missiles[0].targetBrickId === 'lowest-a', 'first missile did not reserve lowest brick after deployment');
+  assert(missiles[1].targetBrickId === 'next-b', 'second missile duplicated first reservation');
+
+  const first = missiles[0];
+  const priorVelocity = { ...first.velocity };
+  const targetA = state.brickField.columns.flat().find(({ id }) => id === 'lowest-a');
+  assert(targetA, 'missing external destruction target');
+  applyBrickDamage(state, targetA, 1, 'GUN');
+  stepSimulation(state, input, 1 / 120, 1 / 120);
+  assert(first.targetBrickId !== 'lowest-a', 'missile retained a destroyed target');
+  const priorAngle = Math.atan2(priorVelocity.y, priorVelocity.x);
+  const nextAngle = Math.atan2(first.velocity.y, first.velocity.x);
+  assert(Math.abs(nextAngle - priorAngle) <= GAME_CONFIG.powers.missileTurnRateRadiansPerSecond / 120 + 1e-6, 'missile snapped direction while retargeting');
+}
+
+function testMissileAcquisitionAndDeployment(): void {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('target', 900, 250));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  state.powers.currentChoices = ['HOMING_MISSILE'];
+  state.powers.pendingSelections = 1;
+  assert(acquirePower(state, 'HOMING_MISSILE'), 'initial Homing Missile acquisition failed');
+  const input = { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 };
+  stepSimulation(state, input, 1 / 120, 1 / 120);
+  const missile = state.projectiles.find(({ kind }) => kind === 'MISSILE');
+  assert(missile?.missilePhase === 'DEPLOYING', 'first missile did not launch promptly into deployment');
+  assertNear(missile.velocity.x, 0, 'deploying missile horizontal velocity');
+  assertNear(missile.velocity.y, -GAME_CONFIG.powers.missileDeploymentSpeed, 'deploying missile speed');
+  for (let step = 1; step < 41; step += 1) stepSimulation(state, input, 1 / 120, 1 / 120);
+  assert(missile.missilePhase === 'DEPLOYING', 'missile guidance engaged before deployment duration');
+  stepSimulation(state, input, 1 / 120, 1 / 120);
+  const engagedMissile = state.projectiles.find(({ id }) => id === missile.id);
+  assert(engagedMissile?.missilePhase === 'HOMING' && engagedMissile.targetBrickId === 'target', 'missile did not acquire after deployment');
+  assert(engagedMissile.velocity.x > 0 && engagedMissile.velocity.y < 0, 'missile did not begin a curved turn toward target');
+  assert(Math.atan2(engagedMissile.velocity.y, engagedMissile.velocity.x) < 0, 'missile heading became invalid');
+
+  const existingCount = state.projectiles.filter(({ kind }) => kind === 'MISSILE').length;
+  const reloadProgress = state.powers.missileReloadSeconds;
+  state.powers.currentChoices = ['HOMING_MISSILE'];
+  state.powers.pendingSelections = 1;
+  assert(acquirePower(state, 'HOMING_MISSILE'), 'Homing Missile upgrade failed');
+  assert(state.projectiles.filter(({ kind }) => kind === 'MISSILE').length === existingCount, 'Homing Missile upgrade launched an extra missile');
+  assertNear(state.powers.missileReloadSeconds, reloadProgress, 'Homing Missile upgrade reset cycle progress');
+}
+
+function testMissileAccidentalImpactAndReservationRelease(): void {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  const brickB = makeBrick('b', 500, 380);
+  const brickC = makeBrick('c', 500, 200);
+  addBrick(state, brickB);
+  addBrick(state, brickC);
+  state.projectiles.push(
+    {
+      id: 1, kind: 'MISSILE', x: 700, y: 500, velocity: { x: 0, y: -180 }, damage: 1,
+      missilePhase: 'HOMING', homingSpeed: 180, targetBrickId: 'b', deploymentRemainingSeconds: 0,
+    },
+    {
+      id: 2, kind: 'MISSILE', x: 528, y: 410, velocity: { x: 0, y: -720 }, damage: 1,
+      missilePhase: 'HOMING', homingSpeed: 720, targetBrickId: 'c', deploymentRemainingSeconds: 0,
+    },
+  );
+  state.nextProjectileId = 3;
+  stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
+  assert(!state.projectiles.some(({ id }) => id === 2), 'missile survived accidental non-target impact');
+  assert(!state.brickField.columns.flat().some(({ id }) => id === 'b'), 'accidental impact did not damage brick B');
+  const survivor = state.projectiles.find(({ id }) => id === 1);
+  assert(survivor?.targetBrickId === 'c', 'surviving missile could not claim released target C');
+}
+
+function testMissileDamageAndNoTargetExpiry(): void {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  state.powers.levels.ELECTRIC_BALL = 5;
+  state.powers.levels.FIRE_BALL = 5;
+  state.powers.levels.WIND_BALL = 5;
+  const victim = makeBrick('victim', 500, 300);
+  addBrick(state, victim);
+  const xpBefore = state.progression.currentXp;
+  const destruction = applyBrickDamage(state, victim, 1, 'MISSILE');
+  assert(destruction?.source === 'MISSILE', 'missile damage source was not retained');
+  assert(state.progression.currentXp === xpBefore + 1, 'missile kill did not award XP');
+  assert(state.projectiles.length === 0 && state.fireEffects.length === 0 && state.windEffects.length === 0, 'missile kill triggered BALL proc powers');
+
+  const reservedBlocker = makeBrick('reserved-blocker', 42, 8);
+  addBrick(state, reservedBlocker);
+  state.projectiles.push({
+    id: 1, kind: 'MISSILE', x: 1000, y: 600, velocity: { x: 0, y: -180 }, damage: 1,
+    missilePhase: 'HOMING', homingSpeed: 180, deploymentRemainingSeconds: 0, targetBrickId: reservedBlocker.id,
+  }, {
+    id: 2, kind: 'MISSILE', x: 600, y: 35, velocity: { x: 0, y: -100 }, damage: 1,
+    missilePhase: 'SEARCHING', homingSpeed: 180, deploymentRemainingSeconds: 0,
+  });
+  stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.1, 0.1);
+  assert(!state.projectiles.some(({ id }) => id === 2), 'targetless missile did not expire above playfield');
+}
+
 testBallKillCategory();
 testElectricRanking();
 testWindRanking();
@@ -242,3 +404,9 @@ testWindLevelsAndNoRecursion();
 testMultiballTargetSpeeds();
 testSplittingTuningAndAcquisition();
 testGunCadence();
+testMissileTargetPriority();
+testMissileLaunchPositionsAndCadence();
+testMissileDeploymentReservationsAndRetargeting();
+testMissileAcquisitionAndDeployment();
+testMissileAccidentalImpactAndReservationRelease();
+testMissileDamageAndNoTargetExpiry();

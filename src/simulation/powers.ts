@@ -3,7 +3,7 @@ import { spawnBallsFromParent } from './ballSpawning';
 import type { GameState } from './gameState';
 
 export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE'
-  | 'ELECTRIC_BALL' | 'FIRE_BALL' | 'WIND_BALL';
+  | 'ELECTRIC_BALL' | 'FIRE_BALL' | 'WIND_BALL' | 'HOMING_MISSILE';
 
 export interface PowerDefinition {
   id: PowerId;
@@ -25,6 +25,10 @@ export interface RunPowerState {
   gunShotCooldownSeconds: number;
   gunReloadSeconds: number;
   gunVolleysRemaining: number;
+  missileLaunchCooldownSeconds: number;
+  missileReloadSeconds: number;
+  missilesRemainingInVolley: number;
+  missileLaunchIndex: number;
 }
 
 export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
@@ -72,6 +76,12 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
       ? 'Destroyed bricks blast every brick above.'
       : `Destroyed bricks blast ${level + 1} brick spaces above.`,
   },
+  {
+    id: 'HOMING_MISSILE', name: 'HOMING MISSILE', enabledInOfferPool: true,
+    describeCurrent: (level) => level === 5
+      ? 'Rapidly launches 5 missiles that hunt the lowest bricks.'
+      : `Launches ${level} missile${level === 1 ? '' : 's'} that hunt the lowest brick${level === 1 ? '' : 's'}.`,
+  },
 ] as const;
 
 export function createRunPowerState(): RunPowerState {
@@ -79,6 +89,8 @@ export function createRunPowerState(): RunPowerState {
     levels: {}, ownedOrder: [], maxedPowerOrder: [], rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
     pendingSelections: 0, currentChoices: [], offerGeneratorState: GAME_CONFIG.powers.offerSeed >>> 0,
     splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunVolleysRemaining: 0,
+    missileLaunchCooldownSeconds: 0, missileReloadSeconds: 0,
+    missilesRemainingInVolley: 0, missileLaunchIndex: 0,
   };
 }
 
@@ -188,6 +200,11 @@ export function acquirePower(state: GameState, id: PowerId): boolean {
       spawnBallsFromParent(state, oldestBall, newLevel, getPowerLevel(state.powers, 'PIERCING_BALL'));
     }
     state.powers.splitTimerSeconds = 0;
+  } else if (id === 'HOMING_MISSILE' && oldLevel === 0) {
+    state.powers.missilesRemainingInVolley = newLevel;
+    state.powers.missileLaunchIndex = 0;
+    state.powers.missileLaunchCooldownSeconds = 0;
+    state.powers.missileReloadSeconds = 0;
   }
 
   state.powers.pendingSelections -= 1;

@@ -77,3 +77,32 @@ export function selectWindTargets(
   const sourceCenterY = getCenterY(source);
   return eligible.filter((brick) => sourceCenterY - getCenterY(brick) <= range);
 }
+
+export function selectMissileTarget(
+  missileX: number,
+  bricks: readonly BrickState[],
+  reservedBrickIds: ReadonlySet<string>,
+): BrickState | undefined {
+  let selected: BrickState | undefined;
+  const verticalTolerance = GAME_CONFIG.powers.missileVerticalTieTolerance;
+  for (const brick of bricks) {
+    if (reservedBrickIds.has(brick.id)) continue;
+    if (!selected) {
+      selected = brick;
+      continue;
+    }
+    const yDifference = getCenterY(brick) - getCenterY(selected);
+    if (yDifference > verticalTolerance) {
+      selected = brick;
+      continue;
+    }
+    if (Math.abs(yDifference) > verticalTolerance) continue;
+    const horizontalDistance = Math.abs(getCenterX(brick) - missileX);
+    const selectedHorizontalDistance = Math.abs(getCenterX(selected) - missileX);
+    if (horizontalDistance < selectedHorizontalDistance
+      || (horizontalDistance === selectedHorizontalDistance && brick.id.localeCompare(selected.id) < 0)) {
+      selected = brick;
+    }
+  }
+  return selected;
+}

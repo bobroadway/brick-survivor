@@ -34,7 +34,7 @@ import { BuildOverlay } from '../ui/BuildOverlay';
 import { PauseMenu } from '../ui/PauseMenu';
 import { PowerChoiceOverlay } from '../ui/PowerChoiceOverlay';
 
-const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f } as const;
+const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f, MISSILE: 0xff8a3d } as const;
 const FIRE_EFFECT_COLOR = 0xef5350;
 const WIND_EFFECT_COLOR = 0x76a982;
 
