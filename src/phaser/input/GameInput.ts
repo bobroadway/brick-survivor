@@ -3,7 +3,7 @@ import { GAME_CONFIG } from '../../simulation/config';
 import type { SimulationInput } from '../../simulation/simulation';
 
 const SHELL_CODES = new Set([
-  'Tab', 'Escape', 'Enter', 'NumpadEnter', 'F11',
+  'Space', 'Tab', 'Escape', 'Enter', 'NumpadEnter', 'F11', 'KeyB', 'KeyR',
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'KeyW', 'KeyA', 'KeyS', 'KeyD',
 ]);

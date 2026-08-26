@@ -37,8 +37,8 @@ export class PauseMenu {
     private readonly renderQuality: RenderQualityManager,
     private readonly actions: PauseMenuActions,
   ) {
-    this.main = this.scene.add.container(0, 0).setVisible(false);
-    this.modal = this.scene.add.container(0, 0).setVisible(false);
+    this.main = this.scene.add.container(0, 0).setDepth(21).setVisible(false);
+    this.modal = this.scene.add.container(0, 0).setDepth(22).setVisible(false);
     this.main.add(this.renderQuality.addText(640, 122, 'PAUSED', {
       color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '52px', fontStyle: 'bold',
     }).setOrigin(0.5));

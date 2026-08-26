@@ -1,20 +1,19 @@
 export enum GamePhase {
+  Ready = 'READY',
   Running = 'RUNNING',
-  Suspended = 'SUSPENDED',
-}
-
-export enum SuspensionReason {
-  ManualPause = 'MANUAL_PAUSE',
-  // Future reasons such as LEVEL_UP_SELECTION and GAME_OVER belong here.
+  Paused = 'PAUSED',
+  LifeLost = 'LIFE_LOST',
+  GameOver = 'GAME_OVER',
+  // Future suspended phases such as LEVEL_UP can be added here.
 }
 
 export interface SessionState {
   phase: GamePhase;
-  suspensionReason: SuspensionReason | null;
+  phaseTimerSeconds: number;
 }
 
 export function createSessionState(): SessionState {
-  return { phase: GamePhase.Running, suspensionReason: null };
+  return { phase: GamePhase.Ready, phaseTimerSeconds: 0 };
 }
 
 export function isSimulationRunning(session: SessionState): boolean {
@@ -22,21 +21,30 @@ export function isSimulationRunning(session: SessionState): boolean {
 }
 
 export function pauseManually(session: SessionState): void {
-  session.phase = GamePhase.Suspended;
-  session.suspensionReason = SuspensionReason.ManualPause;
+  if (session.phase === GamePhase.Running) session.phase = GamePhase.Paused;
 }
 
 export function resumeManualPause(session: SessionState): void {
-  if (session.suspensionReason !== SuspensionReason.ManualPause) return;
-  session.phase = GamePhase.Running;
-  session.suspensionReason = null;
+  if (session.phase === GamePhase.Paused) session.phase = GamePhase.Running;
 }
 
-export function toggleManualPause(session: SessionState): void {
-  if (session.suspensionReason === SuspensionReason.ManualPause) {
-    session.phase = GamePhase.Running;
-    session.suspensionReason = null;
-  } else if (session.phase === GamePhase.Running) {
-    pauseManually(session);
-  }
+export function launchReadyBall(session: SessionState): void {
+  if (session.phase === GamePhase.Ready) session.phase = GamePhase.Running;
+}
+
+export function beginLifeLost(session: SessionState, delaySeconds: number): void {
+  session.phase = GamePhase.LifeLost;
+  session.phaseTimerSeconds = delaySeconds;
+}
+
+export function advanceLifeLost(session: SessionState, deltaSeconds: number): boolean {
+  if (session.phase !== GamePhase.LifeLost) return false;
+  session.phaseTimerSeconds = Math.max(0, session.phaseTimerSeconds - deltaSeconds);
+  if (session.phaseTimerSeconds > 0) return false;
+  session.phase = GamePhase.Ready;
+  return true;
+}
+
+export function enterGameOver(session: SessionState): void {
+  session.phase = GamePhase.GameOver;
 }

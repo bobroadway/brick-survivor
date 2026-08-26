@@ -19,16 +19,6 @@ function setBallDirection(ball: BallState, horizontalRatio: number, upward: bool
   ball.velocity.y = Math.sqrt(config.speed ** 2 - ball.velocity.x ** 2) * (upward ? -1 : 1);
 }
 
-function resetBallAbovePaddle(state: GameState): void {
-  const { ball, paddle } = state;
-  ball.x = paddle.x;
-  ball.y = paddle.y - paddle.height / 2 - GAME_CONFIG.ball.spawnGap;
-  ball.active = true;
-  ball.positionHistory.length = 0;
-  ball.historySampleTimer = 0;
-  setBallDirection(ball, GAME_CONFIG.ball.initialHorizontalRatio * (ball.velocity.x < 0 ? -1 : 1), true);
-}
-
 function updatePaddle(state: GameState, input: SimulationInput, deltaSeconds: number): void {
   const { paddle } = state;
   const speedMultiplier = Math.max(0, input.speedMultiplier);
@@ -71,13 +61,8 @@ function collideWithBrick(ball: BallState, brick: BrickState, previousX: number,
   }
 }
 
-function updateBall(state: GameState, deltaSeconds: number): void {
-  const { ball, paddle } = state;
-  if (!ball.active) {
-    ball.resetTimer -= deltaSeconds;
-    if (ball.resetTimer <= 0) resetBallAbovePaddle(state);
-    return;
-  }
+function updateBall(state: GameState, ball: BallState, deltaSeconds: number): boolean {
+  const { paddle } = state;
 
   const previousX = ball.x;
   const previousY = ball.y;
@@ -112,21 +97,44 @@ function updateBall(state: GameState, deltaSeconds: number): void {
     break;
   }
   if (ball.y - ball.radius > field.bottom) {
-    ball.active = false;
-    ball.resetTimer = GAME_CONFIG.ball.resetDelaySeconds;
+    return true;
   }
 
-  if (ball.active) {
-    ball.historySampleTimer += deltaSeconds;
-    if (ball.historySampleTimer >= GAME_CONFIG.ball.trailSampleIntervalSeconds) {
-      ball.historySampleTimer %= GAME_CONFIG.ball.trailSampleIntervalSeconds;
-      ball.positionHistory.push({ x: ball.x, y: ball.y });
-      if (ball.positionHistory.length > GAME_CONFIG.ball.trailSampleCount) ball.positionHistory.shift();
-    }
+  ball.historySampleTimer += deltaSeconds;
+  if (ball.historySampleTimer >= GAME_CONFIG.ball.trailSampleIntervalSeconds) {
+    ball.historySampleTimer %= GAME_CONFIG.ball.trailSampleIntervalSeconds;
+    ball.positionHistory.push({ x: ball.x, y: ball.y });
+    if (ball.positionHistory.length > GAME_CONFIG.ball.trailSampleCount) ball.positionHistory.shift();
   }
+  return false;
 }
 
-export function stepSimulation(state: GameState, input: SimulationInput, deltaSeconds: number): void {
+export function stepSimulation(state: GameState, input: SimulationInput, deltaSeconds: number): boolean {
   updatePaddle(state, input, deltaSeconds);
-  updateBall(state, deltaSeconds);
+  for (let index = state.balls.length - 1; index >= 0; index -= 1) {
+    if (updateBall(state, state.balls[index], deltaSeconds)) state.balls.splice(index, 1);
+  }
+  return state.balls.length === 0;
+}
+
+/** Temporary Commit 4 debug hook. Replace when real ball-spawning mechanics exist. */
+export function spawnDebugBall(state: GameState): void {
+  const source = state.balls[state.balls.length - 1];
+  if (!source) return;
+  const directionSign = state.nextBallId % 2 === 0 ? 1 : -1;
+  const offsetX = directionSign * (source.radius * 3);
+  const field = GAME_CONFIG.playfield;
+  const ball: BallState = {
+    id: state.nextBallId,
+    x: Math.min(field.right - source.radius, Math.max(field.left + source.radius, source.x + offsetX)),
+    y: Math.max(field.top + source.radius, source.y - source.radius * 2.5),
+    velocity: { x: source.velocity.x, y: source.velocity.y },
+    positionHistory: [],
+    historySampleTimer: 0,
+    radius: source.radius,
+  };
+  const sourceRatio = source.velocity.x / GAME_CONFIG.ball.speed;
+  setBallDirection(ball, sourceRatio + directionSign * 0.28, source.velocity.y < 0);
+  state.nextBallId += 1;
+  state.balls.push(ball);
 }
