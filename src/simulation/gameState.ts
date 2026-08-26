@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from './config';
+import { spawnBallsFromParent } from './ballSpawning';
 import { createBrickField, type BrickFieldState } from './brickField';
 import { createRunProgression, type RunProgressionState } from './progression';
 import { createRunPowerState, getPowerLevel, type RunPowerState } from './powers';
@@ -12,6 +13,10 @@ export interface BallState extends Vector2 {
   historySampleTimer: number;
   radius: number;
   pierceCharge: number;
+  pierceProcArmed: boolean;
+  speedAssistStart: number;
+  speedAssistTarget: number;
+  speedAssistElapsedSeconds: number;
 }
 export type ProjectileKind = 'GUN' | 'ELECTRIC';
 export interface ProjectileState extends Vector2 {
@@ -51,6 +56,10 @@ export function createInitialGameState(): GameState {
       historySampleTimer: 0,
       radius: ball.radius,
       pierceCharge: 0,
+      pierceProcArmed: false,
+      speedAssistStart: ball.speed,
+      speedAssistTarget: ball.speed,
+      speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,
     }],
     brickField: createBrickField(),
     lives: GAME_CONFIG.run.startingLives,
@@ -64,30 +73,7 @@ export function createInitialGameState(): GameState {
 }
 
 export function spawnSplitBalls(state: GameState, parent: BallState, count: number): void {
-  const { ball } = GAME_CONFIG;
-  const pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
-  for (let index = 0; index < count; index += 1) {
-    const sequence = state.nextBallId;
-    const fraction = (sequence * 0.6180339887498949) % 1;
-    const magnitude = ball.minHorizontalRatio
-      + fraction * (ball.maxHorizontalRatio - ball.minHorizontalRatio);
-    const horizontalRatio = sequence % 2 === 0 ? magnitude : -magnitude;
-    const horizontalVelocity = ball.speed * horizontalRatio;
-    state.balls.push({
-      id: sequence,
-      x: parent.x,
-      y: parent.y,
-      velocity: {
-        x: horizontalVelocity,
-        y: -Math.sqrt(ball.speed ** 2 - horizontalVelocity ** 2),
-      },
-      positionHistory: [],
-      historySampleTimer: 0,
-      radius: ball.radius,
-      pierceCharge,
-    });
-    state.nextBallId += 1;
-  }
+  spawnBallsFromParent(state, parent, count, getPowerLevel(state.powers, 'PIERCING_BALL'));
 }
 
 export function prepareSingleBall(state: GameState): void {
@@ -106,6 +92,10 @@ export function prepareSingleBall(state: GameState): void {
     historySampleTimer: 0,
     radius: ball.radius,
     pierceCharge: getPowerLevel(state.powers, 'PIERCING_BALL'),
+    pierceProcArmed: getPowerLevel(state.powers, 'PIERCING_BALL') > 0,
+    speedAssistStart: ball.speed,
+    speedAssistTarget: ball.speed,
+    speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,
   }];
   state.nextBallId += 1;
 }

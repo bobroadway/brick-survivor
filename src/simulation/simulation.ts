@@ -1,6 +1,11 @@
 import { GAME_CONFIG } from './config';
 import { advanceBrickField, type BrickState } from './brickField';
-import { applyBrickDamage, type BrickDestruction } from './combat';
+import {
+  applyBrickDamage,
+  getNormalHitProcDestruction,
+  type BallBrickCollisionResult,
+  type BrickDestruction,
+} from './combat';
 import { spawnSplitBalls, type BallState, type GameState } from './gameState';
 import { getPowerLevel } from './powers';
 
@@ -20,12 +25,44 @@ export function getBallSpeed(ball: BallState): number {
   return Math.hypot(ball.velocity.x, ball.velocity.y);
 }
 
+export function getMultiballTargetSpeed(activeBallCount: number): number {
+  const config = GAME_CONFIG.ball;
+  const additionalBalls = Math.max(0, Math.floor(activeBallCount) - 1);
+  const slowdown = Math.min(
+    config.multiballMaximumSlowdown,
+    config.multiballSlowdownPerExtraBall * additionalBalls,
+  );
+  return config.speed * (1 - slowdown);
+}
+
+function updateBallSpeedAssist(ball: BallState, targetSpeed: number, deltaSeconds: number): void {
+  const currentSpeed = getBallSpeed(ball);
+  if (ball.speedAssistTarget !== targetSpeed) {
+    ball.speedAssistStart = currentSpeed;
+    ball.speedAssistTarget = targetSpeed;
+    ball.speedAssistElapsedSeconds = 0;
+  }
+  if (currentSpeed <= Number.EPSILON) return;
+  ball.speedAssistElapsedSeconds = Math.min(
+    GAME_CONFIG.ball.multiballSpeedTransitionDurationSeconds,
+    ball.speedAssistElapsedSeconds + deltaSeconds,
+  );
+  const progress = GAME_CONFIG.ball.multiballSpeedTransitionDurationSeconds <= 0
+    ? 1
+    : ball.speedAssistElapsedSeconds / GAME_CONFIG.ball.multiballSpeedTransitionDurationSeconds;
+  const adjustedSpeed = ball.speedAssistStart + (targetSpeed - ball.speedAssistStart) * progress;
+  const scale = adjustedSpeed / currentSpeed;
+  ball.velocity.x *= scale;
+  ball.velocity.y *= scale;
+}
+
 function setBallDirection(ball: BallState, horizontalRatio: number, upward: boolean): void {
   const config = GAME_CONFIG.ball;
+  const speed = getBallSpeed(ball) || config.speed;
   const magnitude = Math.min(config.maxHorizontalRatio, Math.max(config.minHorizontalRatio, Math.abs(horizontalRatio)));
   const sign = horizontalRatio === 0 ? (ball.velocity.x < 0 ? -1 : 1) : Math.sign(horizontalRatio);
-  ball.velocity.x = config.speed * magnitude * sign;
-  ball.velocity.y = Math.sqrt(config.speed ** 2 - ball.velocity.x ** 2) * (upward ? -1 : 1);
+  ball.velocity.x = speed * magnitude * sign;
+  ball.velocity.y = Math.sqrt(speed ** 2 - ball.velocity.x ** 2) * (upward ? -1 : 1);
 }
 
 function updatePaddle(state: GameState, input: SimulationInput, deltaSeconds: number): void {
@@ -55,7 +92,8 @@ function triggerElectric(state: GameState, destruction: BrickDestruction): void 
   if (level === 0) return;
   const sourceX = destruction.x + destruction.width / 2;
   const sourceY = destruction.y + destruction.height / 2;
-  const radius = (GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap) * level;
+  const radius = (GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap)
+    * GAME_CONFIG.powers.electricRadiusInBrickPitches;
   const candidates: Array<{ brick: BrickState; distance: number }> = [];
   for (const column of state.brickField.columns) {
     for (const brick of column) {
@@ -64,8 +102,7 @@ function triggerElectric(state: GameState, destruction: BrickDestruction): void 
     }
   }
   candidates.sort((left, right) => left.distance - right.distance || left.brick.id.localeCompare(right.brick.id));
-  const targetCount = level === 5 ? 3 : 1;
-  for (const { brick } of candidates.slice(0, targetCount)) {
+  for (const { brick } of candidates.slice(0, level)) {
     state.projectiles.push({
       id: state.nextProjectileId++, kind: 'ELECTRIC', x: sourceX, y: sourceY,
       velocity: { x: 0, y: 0 }, damage: 1, targetBrickId: brick.id,
@@ -95,18 +132,24 @@ function triggerFire(state: GameState, destruction: BrickDestruction): void {
   for (const brick of targets) applyBrickDamage(state, brick, 1, 'FIRE');
 }
 
-function handleBallDestruction(state: GameState, destruction: BrickDestruction | null): void {
-  if (!destruction) return;
-  triggerElectric(state, destruction);
-  triggerFire(state, destruction);
+function handleBallBrickCollision(state: GameState, collision: BallBrickCollisionResult): void {
+  const procEligibleDestruction = getNormalHitProcDestruction(collision);
+  if (!procEligibleDestruction) return;
+  triggerElectric(state, procEligibleDestruction);
+  triggerFire(state, procEligibleDestruction);
 }
 
-function spawnGunProjectile(state: GameState): void {
-  state.projectiles.push({
-    id: state.nextProjectileId++, kind: 'GUN', x: state.paddle.x,
-    y: state.paddle.y - state.paddle.height / 2,
-    velocity: { x: 0, y: -GAME_CONFIG.powers.projectileSpeed }, damage: 1,
-  });
+function spawnGunVolley(state: GameState): void {
+  const halfWidth = state.paddle.width / 2;
+  const inset = Math.min(GAME_CONFIG.powers.gunMountInset, halfWidth);
+  const mountOffset = halfWidth - inset;
+  for (const x of [state.paddle.x - mountOffset, state.paddle.x + mountOffset]) {
+    state.projectiles.push({
+      id: state.nextProjectileId++, kind: 'GUN', x,
+      y: state.paddle.y - state.paddle.height / 2,
+      velocity: { x: 0, y: -GAME_CONFIG.powers.projectileSpeed }, damage: 1,
+    });
+  }
 }
 
 function updateGun(state: GameState, deltaSeconds: number): void {
@@ -115,14 +158,14 @@ function updateGun(state: GameState, deltaSeconds: number): void {
   const powers = state.powers;
   if (powers.gunReloadSeconds > 0) {
     powers.gunReloadSeconds = Math.max(0, powers.gunReloadSeconds - deltaSeconds);
-    if (powers.gunReloadSeconds === 0) powers.gunShotsRemaining = level;
+    if (powers.gunReloadSeconds === 0) powers.gunVolleysRemaining = level;
     return;
   }
   powers.gunShotCooldownSeconds = Math.max(0, powers.gunShotCooldownSeconds - deltaSeconds);
-  if (powers.gunShotsRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
-  spawnGunProjectile(state);
-  powers.gunShotsRemaining -= 1;
-  if (powers.gunShotsRemaining > 0) powers.gunShotCooldownSeconds = GAME_CONFIG.powers.gunShotIntervalSeconds;
+  if (powers.gunVolleysRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
+  spawnGunVolley(state);
+  powers.gunVolleysRemaining -= 1;
+  if (powers.gunVolleysRemaining > 0) powers.gunShotCooldownSeconds = GAME_CONFIG.powers.gunShotIntervalSeconds;
   else powers.gunReloadSeconds = GAME_CONFIG.powers.gunReloadSeconds;
 }
 
@@ -241,6 +284,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
     const hitOffset = (ball.x - paddle.x) / (paddle.width / 2);
     setBallDirection(ball, hitOffset * GAME_CONFIG.ball.maxHorizontalRatio, true);
     ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+    ball.pierceProcArmed = ball.pierceCharge > 0;
   }
 
   let collided = false;
@@ -250,12 +294,25 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
       const brickHp = brick.hp;
       if (ball.pierceCharge >= brickHp && ball.pierceCharge > 0) {
         ball.pierceCharge -= brickHp;
-        handleBallDestruction(state, applyBrickDamage(state, brick, brickHp, 'BALL'));
+        const destruction = applyBrickDamage(state, brick, brickHp, 'BALL');
+        const pierceProcGranted = destruction !== null && ball.pierceProcArmed;
+        if (pierceProcGranted) ball.pierceProcArmed = false;
+        handleBallBrickCollision(state, {
+          destruction,
+          outcome: 'PIERCED_THROUGH',
+          pierceProcGranted,
+        });
       } else {
         const pierceDamage = Math.min(ball.pierceCharge, Math.max(0, brickHp - 1));
         ball.pierceCharge = 0;
         collideWithBrick(ball, brick, previousX, previousY);
-        handleBallDestruction(state, applyBrickDamage(state, brick, 1 + pierceDamage, 'BALL'));
+        handleBallBrickCollision(state, {
+          destruction: applyBrickDamage(state, brick, 1 + pierceDamage, 'BALL'),
+          outcome: 'BOUNCED',
+          pierceProcGranted: false,
+        });
+        ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        ball.pierceProcArmed = ball.pierceCharge > 0;
       }
       collided = true;
       break;
@@ -270,7 +327,9 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
   if (ball.historySampleTimer >= GAME_CONFIG.ball.trailSampleIntervalSeconds) {
     ball.historySampleTimer %= GAME_CONFIG.ball.trailSampleIntervalSeconds;
     ball.positionHistory.push({ x: ball.x, y: ball.y });
-    if (ball.positionHistory.length > GAME_CONFIG.ball.trailSampleCount) ball.positionHistory.shift();
+    if (ball.positionHistory.length > GAME_CONFIG.levelUpTransition.maxVisibleTrajectoryGhosts) {
+      ball.positionHistory.shift();
+    }
   }
   return false;
 }
@@ -278,18 +337,21 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
 export function stepSimulation(
   state: GameState,
   input: SimulationInput,
-  deltaSeconds: number,
+  playerDeltaSeconds: number,
+  worldDeltaSeconds: number = playerDeltaSeconds,
 ): SimulationStepOutcome {
-  if (advanceBrickField(state.brickField, deltaSeconds, state.progression.level)) {
+  updatePaddle(state, input, playerDeltaSeconds);
+  if (advanceBrickField(state.brickField, worldDeltaSeconds, state.progression.level)) {
     return SimulationStepOutcome.BrickOverflow;
   }
-  updatePaddle(state, input, deltaSeconds);
-  updateGun(state, deltaSeconds);
-  updateSplitting(state, deltaSeconds);
-  updateProjectiles(state, deltaSeconds);
-  updateFireEffects(state, deltaSeconds);
+  updateGun(state, worldDeltaSeconds);
+  updateSplitting(state, worldDeltaSeconds);
+  updateProjectiles(state, worldDeltaSeconds);
+  updateFireEffects(state, worldDeltaSeconds);
+  const targetBallSpeed = getMultiballTargetSpeed(state.balls.length);
   for (let index = state.balls.length - 1; index >= 0; index -= 1) {
-    if (updateBall(state, state.balls[index], deltaSeconds)) state.balls.splice(index, 1);
+    updateBallSpeedAssist(state.balls[index], targetBallSpeed, worldDeltaSeconds);
+    if (updateBall(state, state.balls[index], worldDeltaSeconds)) state.balls.splice(index, 1);
   }
   return state.balls.length === 0 ? SimulationStepOutcome.FinalBallLost : SimulationStepOutcome.None;
 }

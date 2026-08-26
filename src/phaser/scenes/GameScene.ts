@@ -13,11 +13,13 @@ import {
 } from '../../simulation/simulation';
 import {
   createSessionState,
+  beginLevelUpSlowdown,
+  beginLevelUpSpeedup,
   buildToPause,
   enterBuild,
   enterGameOver,
   enterLevelUp,
-  finishLevelUp,
+  finishLevelUpSpeedup,
   GamePhase,
   isSimulationRunning,
   launchReadyBall,
@@ -33,6 +35,8 @@ import { PauseMenu } from '../ui/PauseMenu';
 import { PowerChoiceOverlay } from '../ui/PowerChoiceOverlay';
 
 const BRICK_COLORS = [0x607d9d, 0x657c91, 0x6c738c, 0x756b83] as const;
+const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f } as const;
+const FIRE_EFFECT_COLOR = 0xef5350;
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
@@ -41,6 +45,7 @@ export class GameScene extends Phaser.Scene {
   private renderQuality!: RenderQualityManager;
   private graphics!: Phaser.GameObjects.Graphics;
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
+  private readonly levelUpGhosts = new Map<number, Array<{ x: number; y: number }>>();
   private debugText?: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
   private levelText!: Phaser.GameObjects.Text;
@@ -157,15 +162,26 @@ export class GameScene extends Phaser.Scene {
     }
 
     const frameSeconds = Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
+    const worldTimeScale = this.getWorldTimeScale();
     this.accumulator += frameSeconds;
     const stepCount = Math.floor(this.accumulator / GAME_CONFIG.fixedStepSeconds);
-    if (stepCount === 0) return;
+    if (stepCount === 0) {
+      this.advanceLevelUpTransition(frameSeconds);
+      this.drawGame();
+      return;
+    }
     this.gameInput.readSimulationInput(this.simulationInput);
     this.simulationInput.mouseDisplacement /= stepCount;
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
-      const outcome = stepSimulation(this.state, this.simulationInput, GAME_CONFIG.fixedStepSeconds);
+      const outcome = stepSimulation(
+        this.state,
+        this.simulationInput,
+        GAME_CONFIG.fixedStepSeconds,
+        GAME_CONFIG.fixedStepSeconds * worldTimeScale,
+      );
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
       if (outcome === SimulationStepOutcome.BrickOverflow) {
+        this.clearLevelUpTransitionGhosts();
         enterGameOver(this.session);
         this.applyPhasePresentation();
         break;
@@ -174,12 +190,11 @@ export class GameScene extends Phaser.Scene {
         this.handleFinalBallLost();
         break;
       }
-      if (this.state.powers.pendingSelections > 0 && prepareNextPowerSelection(this.state.powers)) {
-        enterLevelUp(this.session);
-        this.applyPhasePresentation();
-        break;
+      if (this.session.phase === GamePhase.Running && this.state.powers.pendingSelections > 0) {
+        this.beginLevelUpSlowdown();
       }
     }
+    this.advanceLevelUpTransition(frameSeconds);
     this.drawGame();
     this.updateProgressionHud();
     this.updateDebugText();
@@ -224,6 +239,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private restartRun(): void {
+    this.clearLevelUpTransitionGhosts();
     this.state = createInitialGameState();
     this.session = createSessionState();
     launchReadyBall(this.session);
@@ -244,10 +260,12 @@ export class GameScene extends Phaser.Scene {
       else this.navigatePauseMenu(code);
       return;
     }
-    if (this.session.phase === GamePhase.Running) {
+    if (isSimulationRunning(this.session)) {
       if (code === 'Tab') {
-        enterBuild(this.session);
-        this.applyPhasePresentation();
+        if (this.session.phase === GamePhase.Running) {
+          enterBuild(this.session);
+          this.applyPhasePresentation();
+        }
       } else if (['Escape', 'Enter', 'NumpadEnter'].includes(code)) {
         this.pauseIfRunning();
       }
@@ -306,7 +324,7 @@ export class GameScene extends Phaser.Scene {
       this.powerChoiceOverlay.show(this.state);
       return;
     }
-    finishLevelUp(this.session);
+    beginLevelUpSpeedup(this.session);
     this.applyPhasePresentation();
   }
 
@@ -383,8 +401,8 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
-    graphics.lineStyle(3, 0xef5350, 1);
     for (const projectile of this.state.projectiles) {
+      graphics.lineStyle(3, PROJECTILE_COLORS[projectile.kind], 1);
       const speed = Math.hypot(projectile.velocity.x, projectile.velocity.y);
       const directionX = speed > 0 ? projectile.velocity.x / speed : 0;
       const directionY = speed > 0 ? projectile.velocity.y / speed : -1;
@@ -395,22 +413,24 @@ export class GameScene extends Phaser.Scene {
         projectile.y - directionY * GAME_CONFIG.powers.projectileLength,
       );
     }
-    graphics.lineStyle(4, 0xef5350, 0.75);
+    graphics.lineStyle(4, FIRE_EFFECT_COLOR, 0.75);
     for (const effect of this.state.fireEffects) graphics.lineBetween(effect.x1, effect.y, effect.x2, effect.y);
     const paddle = this.state.paddle;
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);
-    if (!isSimulationRunning(this.session)) {
+    if (!isSimulationRunning(this.session) || this.session.phase === GamePhase.LevelUpSlowdown) {
       for (const ball of this.state.balls) {
-        const historyLength = ball.positionHistory.length;
+        const history = ball.positionHistory.slice(-GAME_CONFIG.levelUpTransition.maxVisibleTrajectoryGhosts);
+        const historyLength = history.length;
         for (let index = 0; index < historyLength; index += 1) {
-          const point = ball.positionHistory[index];
+          const point = history[index];
           const recency = (index + 1) / historyLength;
           graphics.fillStyle(0xf0eee6, 0.05 + recency * 0.25);
           graphics.fillCircle(point.x, point.y, ball.radius * (0.55 + recency * 0.25));
         }
       }
     }
+    if (this.session.phase === GamePhase.LevelUpSpeedup) this.drawContractingLevelUpGhosts(graphics);
     this.syncBallVisuals();
   }
 
@@ -454,6 +474,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handleFinalBallLost(): void {
+    this.clearLevelUpTransitionGhosts();
     resolveFinalBallLoss(this.state, this.session);
     this.updateLivesText();
     this.applyPhasePresentation();
@@ -478,5 +499,79 @@ export class GameScene extends Phaser.Scene {
       case GamePhase.LifeLost: return 'BALL LOST\n\nSPACE OR CLICK TO CONTINUE';
       default: return null;
     }
+  }
+
+  private beginLevelUpSlowdown(): void {
+    beginLevelUpSlowdown(this.session);
+    this.levelUpGhosts.clear();
+    for (const ball of this.state.balls) {
+      ball.positionHistory.length = 0;
+      ball.historySampleTimer = 0;
+    }
+  }
+
+  private getWorldTimeScale(): number {
+    const transition = GAME_CONFIG.levelUpTransition;
+    if (this.session.phase === GamePhase.LevelUpSlowdown) {
+      return Math.max(0, 1 - this.session.phaseTimerSeconds / transition.slowdownDurationSeconds);
+    }
+    if (this.session.phase === GamePhase.LevelUpSpeedup) {
+      return Math.min(1, this.session.phaseTimerSeconds / transition.speedupDurationSeconds);
+    }
+    return this.session.phase === GamePhase.Running ? 1 : 0;
+  }
+
+  private advanceLevelUpTransition(realDeltaSeconds: number): void {
+    if (this.session.phase === GamePhase.LevelUpSlowdown) {
+      this.session.phaseTimerSeconds += realDeltaSeconds;
+      if (this.session.phaseTimerSeconds < GAME_CONFIG.levelUpTransition.slowdownDurationSeconds) return;
+      this.captureLevelUpTransitionGhosts();
+      if (!prepareNextPowerSelection(this.state.powers)) {
+        enterLevelUp(this.session);
+        beginLevelUpSpeedup(this.session);
+        return;
+      }
+      enterLevelUp(this.session);
+      this.applyPhasePresentation();
+      return;
+    }
+    if (this.session.phase !== GamePhase.LevelUpSpeedup) return;
+    this.session.phaseTimerSeconds += realDeltaSeconds;
+    if (this.session.phaseTimerSeconds < GAME_CONFIG.levelUpTransition.speedupDurationSeconds) return;
+    finishLevelUpSpeedup(this.session);
+    this.clearLevelUpTransitionGhosts();
+  }
+
+  private captureLevelUpTransitionGhosts(): void {
+    this.levelUpGhosts.clear();
+    const maximum = GAME_CONFIG.levelUpTransition.maxVisibleTrajectoryGhosts;
+    for (const ball of this.state.balls) {
+      this.levelUpGhosts.set(ball.id, ball.positionHistory.slice(-maximum).map((point) => ({ ...point })));
+    }
+  }
+
+  private drawContractingLevelUpGhosts(graphics: Phaser.GameObjects.Graphics): void {
+    const progress = Math.min(
+      1,
+      this.session.phaseTimerSeconds / GAME_CONFIG.levelUpTransition.speedupDurationSeconds,
+    );
+    for (const ball of this.state.balls) {
+      const points = this.levelUpGhosts.get(ball.id) ?? [];
+      const visibleCount = Math.ceil(points.length * (1 - progress));
+      if (visibleCount === 0) continue;
+      const visiblePoints = points.slice(points.length - visibleCount);
+      for (let index = 0; index < visiblePoints.length; index += 1) {
+        const point = visiblePoints[index];
+        const recency = (index + 1) / visiblePoints.length;
+        const x = point.x + (ball.x - point.x) * progress;
+        const y = point.y + (ball.y - point.y) * progress;
+        graphics.fillStyle(0xf0eee6, (0.05 + recency * 0.25) * (1 - progress));
+        graphics.fillCircle(x, y, ball.radius * (0.55 + recency * 0.25));
+      }
+    }
+  }
+
+  private clearLevelUpTransitionGhosts(): void {
+    this.levelUpGhosts.clear();
   }
 }

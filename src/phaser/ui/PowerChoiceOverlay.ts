@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { GameState } from '../../simulation/gameState';
-import { getPowerDefinition, getPowerLevel, type PowerId } from '../../simulation/powers';
+import { getPowerDefinition, getPowerDescription, getPowerLevel, type PowerId } from '../../simulation/powers';
 import { RenderQualityManager } from '../rendering/RenderQualityManager';
 
 interface ChoiceVisual {
@@ -92,7 +92,7 @@ export class PowerChoiceOverlay {
       visual.background.setInteractive({ useHandCursor: true });
       const definition = getPowerDefinition(id);
       const nextLevel = getPowerLevel(this.state.powers, id) + 1;
-      visual.text.setText(`${definition.name}\n\nLv${nextLevel}\n\n${definition.describe(nextLevel)}`);
+      visual.text.setText(`${definition.name}\n\nLv${nextLevel}\n\n${getPowerDescription(id, nextLevel, true)}`);
       visual.background.setStrokeStyle(this.focusIndex === index ? 3 : 2, this.focusIndex === index ? 0xe4c46c : 0x53637a);
     }
     const rerolls = this.state.powers.rerollsRemaining;

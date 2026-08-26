@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from './config';
+import { spawnBallsFromParent } from './ballSpawning';
 import type { GameState } from './gameState';
 
 export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE' | 'ELECTRIC_BALL' | 'FIRE_BALL';
@@ -6,7 +7,8 @@ export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE'
 export interface PowerDefinition {
   id: PowerId;
   name: string;
-  describe(level: number): string;
+  describeCurrent(level: number): string;
+  describeSelection?(level: number): string;
 }
 
 export interface RunPowerState {
@@ -19,23 +21,55 @@ export interface RunPowerState {
   splitTimerSeconds: number;
   gunShotCooldownSeconds: number;
   gunReloadSeconds: number;
-  gunShotsRemaining: number;
+  gunVolleysRemaining: number;
 }
 
 export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
-  { id: 'GUN', name: 'GUN', describe: (level) => `Automatically fires ${level}-shot bursts.` },
-  { id: 'PIERCING_BALL', name: 'PIERCING BALL', describe: (level) => `Each ball recharges ${level} pierce HP at the paddle.` },
-  { id: 'SPLITTING_BALL', name: 'SPLITTING BALL', describe: (level) => `Oldest ball creates ${level} additional ball${level === 1 ? '' : 's'} every 30s.` },
-  { id: 'PADDLE_SIZE', name: 'PADDLE SIZE', describe: (level) => `Paddle width becomes ${100 + level * 20}% of base width.` },
-  { id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL', describe: (level) => level === 5 ? 'Ball kills zap up to 3 nearby bricks.' : `Ball kills zap the nearest brick within radius ${level}.` },
-  { id: 'FIRE_BALL', name: 'FIRE BALL', describe: (level) => level === 5 ? 'Ball kills scorch the entire horizontal line.' : `Ball kills scorch ${level} column${level === 1 ? '' : 's'} left and right.` },
+  {
+    id: 'GUN', name: 'GUN',
+    describeCurrent: (level) => level === 1
+      ? 'Dual guns automatically fire upward from the paddle.'
+      : `Fires ${level} volleys before reloading.`,
+  },
+  {
+    id: 'PIERCING_BALL', name: 'PIERCING BALL',
+    describeCurrent: (level) => `Balls can pierce through ${level} brick${level === 1 ? '' : 's'} before needing to bounce and recharge.`,
+  },
+  {
+    id: 'SPLITTING_BALL', name: 'SPLITTING BALL',
+    describeCurrent: (level) => `Creates ${level} additional ball${level === 1 ? '' : 's'} every 20 seconds.`,
+    describeSelection: (level) => level === 1
+      ? 'Immediately creates 1 additional ball, then creates another every 20 seconds.'
+      : `Creates ${level} additional balls every 20 seconds.`,
+  },
+  {
+    id: 'PADDLE_SIZE', name: 'PADDLE SIZE',
+    describeCurrent: (level) => level === 5 ? 'Doubles paddle width.' : `Increases paddle width by ${level * 20}%.`,
+  },
+  {
+    id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL',
+    describeCurrent: (level) => level === 1
+      ? 'Destroyed bricks zap the nearest brick within range.'
+      : `Destroyed bricks zap up to ${level} nearby bricks.`,
+  },
+  {
+    id: 'FIRE_BALL', name: 'FIRE BALL',
+    describeCurrent: (level) => [
+      '',
+      'Destroyed bricks blast nearby bricks to the left and right.',
+      'Horizontal blast range increases.',
+      'Horizontal blast range increases further.',
+      'Horizontal blast range becomes very large.',
+      'Destroyed bricks blast the entire horizontal line.',
+    ][level],
+  },
 ] as const;
 
 export function createRunPowerState(): RunPowerState {
   return {
     levels: {}, ownedOrder: [], rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
     pendingSelections: 0, currentChoices: [], offerGeneratorState: GAME_CONFIG.powers.offerSeed >>> 0,
-    splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunShotsRemaining: 0,
+    splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunVolleysRemaining: 0,
   };
 }
 
@@ -43,6 +77,13 @@ export function getPowerDefinition(id: PowerId): PowerDefinition {
   const definition = POWER_DEFINITIONS.find((candidate) => candidate.id === id);
   if (!definition) throw new Error(`Unknown power: ${id}`);
   return definition;
+}
+
+export function getPowerDescription(id: PowerId, level: number, forSelection: boolean): string {
+  const definition = getPowerDefinition(id);
+  return forSelection && definition.describeSelection
+    ? definition.describeSelection(level)
+    : definition.describeCurrent(level);
 }
 
 export function getPowerLevel(powers: RunPowerState, id: PowerId): number {
@@ -65,11 +106,14 @@ function nextOfferRandom(powers: RunPowerState): number {
 }
 
 function generateOffer(powers: RunPowerState): PowerId[] {
-  return getEligiblePowerIds(powers)
-    .map((id) => ({ id, rank: nextOfferRandom(powers) }))
-    .sort((left, right) => left.rank - right.rank)
-    .slice(0, GAME_CONFIG.powers.offerCount)
-    .map(({ id }) => id);
+  const eligible = getEligiblePowerIds(powers);
+  const choices: PowerId[] = [];
+  while (choices.length < GAME_CONFIG.powers.offerCount && eligible.length > 0) {
+    const index = Math.floor(nextOfferRandom(powers) * eligible.length);
+    choices.push(eligible[index]);
+    eligible.splice(index, 1);
+  }
+  return choices;
 }
 
 export function prepareNextPowerSelection(powers: RunPowerState): boolean {
@@ -107,15 +151,25 @@ export function acquirePower(state: GameState, id: PowerId): boolean {
 
   if (id === 'PIERCING_BALL') {
     const increase = newLevel - oldLevel;
-    for (const ball of state.balls) ball.pierceCharge = Math.min(newLevel, ball.pierceCharge + increase);
+    for (const ball of state.balls) {
+      ball.pierceCharge = Math.min(newLevel, ball.pierceCharge + increase);
+      if (oldLevel === 0) ball.pierceProcArmed = true;
+    }
   } else if (id === 'PADDLE_SIZE') {
     state.paddle.width = GAME_CONFIG.paddle.width * (1 + newLevel * 0.2);
     const minimumX = GAME_CONFIG.playfield.left + state.paddle.width / 2;
     const maximumX = GAME_CONFIG.playfield.right - state.paddle.width / 2;
     state.paddle.x = Math.max(minimumX, Math.min(maximumX, state.paddle.x));
   } else if (id === 'GUN' && oldLevel === 0) {
-    state.powers.gunShotsRemaining = newLevel;
+    state.powers.gunVolleysRemaining = newLevel;
     state.powers.gunShotCooldownSeconds = 0;
+  } else if (id === 'SPLITTING_BALL' && oldLevel === 0) {
+    let oldestBall = state.balls[0];
+    for (const ball of state.balls) if (!oldestBall || ball.id < oldestBall.id) oldestBall = ball;
+    if (oldestBall) {
+      spawnBallsFromParent(state, oldestBall, newLevel, getPowerLevel(state.powers, 'PIERCING_BALL'));
+    }
+    state.powers.splitTimerSeconds = 0;
   }
 
   state.powers.pendingSelections -= 1;
