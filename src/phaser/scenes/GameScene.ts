@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
-import { getActiveBrickCount } from '../../simulation/brickField';
+import { getActiveBrickCount, getBrickDescentSpeedRange } from '../../simulation/brickField';
 import { GAME_CONFIG } from '../../simulation/config';
-import { resolveFinalBallLoss, updateLifeLostTransition } from '../../simulation/gameFlow';
+import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
 import {
   getBallSpeed,
@@ -34,6 +34,7 @@ export class GameScene extends Phaser.Scene {
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
   private debugText?: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
+  private pauseHintText!: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
   private statusShade!: Phaser.GameObjects.Rectangle;
   private statusText!: Phaser.GameObjects.Text;
@@ -49,6 +50,7 @@ export class GameScene extends Phaser.Scene {
   private lastDebugFps = -1;
   private lastDebugBallSpeed = -1;
   private lastDebugBrickCount = -1;
+  private escapeResumePending = false;
 
   constructor() { super('GameScene'); }
 
@@ -61,7 +63,9 @@ export class GameScene extends Phaser.Scene {
       this,
       () => isSimulationRunning(this.session),
       (code) => this.handleShellKey(code),
+      (code) => this.handleShellKeyUp(code),
       () => this.pauseIfRunning(),
+      () => this.handlePrimaryPointerDown(),
     );
     if (GAME_CONFIG.debug.enabled) {
       this.debugText = this.renderQuality.addText(470, 680, '', {
@@ -71,7 +75,7 @@ export class GameScene extends Phaser.Scene {
     this.livesText = this.renderQuality.addText(52, 690, '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
     }).setDepth(10);
-    this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'TAB — PAUSE', {
+    this.pauseHintText = this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'ESC — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0).setDepth(10);
     this.pauseShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.58)
@@ -86,6 +90,7 @@ export class GameScene extends Phaser.Scene {
       align: 'center', color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '40px', fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(21).setVisible(false);
     this.pauseMenu = new PauseMenu(this, this.renderQuality, {
+      start: () => this.startRun(),
       resume: () => this.resumeGame(),
       setDisplayMode: (mode) => void this.changeDisplayMode(mode),
       restart: () => this.restartRun(),
@@ -115,16 +120,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, deltaMilliseconds: number): void {
-    if (this.session.phase === GamePhase.LifeLost) {
-      if (updateLifeLostTransition(
-        this.state,
-        this.session,
-        Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds),
-      )) {
-        this.applyPhasePresentation();
-      }
-      return;
-    }
     if (!isSimulationRunning(this.session)) {
       this.accumulator = 0;
       return;
@@ -152,14 +147,15 @@ export class GameScene extends Phaser.Scene {
     this.updateDebugText();
   }
 
-  private applyPhasePresentation(): void {
+  private applyPhasePresentation(requestPointerLock = true): void {
     const running = isSimulationRunning(this.session);
-    const paused = this.session.phase === GamePhase.Paused;
+    const menuMode = this.getMenuMode();
     this.accumulator = 0;
-    if (running) this.gameInput.enterRunning();
+    if (running) this.gameInput.enterRunning(requestPointerLock);
     else this.gameInput.enterPaused();
-    this.pauseShade.setVisible(paused);
-    if (paused) this.pauseMenu.show();
+    this.pauseShade.setVisible(menuMode !== null);
+    this.pauseHintText.setVisible(running);
+    if (menuMode) this.pauseMenu.show(menuMode);
     else this.pauseMenu.hide();
     const statusMessage = this.getStatusMessage();
     this.statusShade.setVisible(statusMessage !== null);
@@ -171,17 +167,26 @@ export class GameScene extends Phaser.Scene {
   private pauseIfRunning(): void {
     if (!isSimulationRunning(this.session)) return;
     pauseManually(this.session);
+    this.escapeResumePending = false;
     this.applyPhasePresentation();
   }
 
   private resumeGame(): void {
+    this.escapeResumePending = false;
     resumeManualPause(this.session);
+    this.applyPhasePresentation();
+  }
+
+  private startRun(): void {
+    if (this.session.phase !== GamePhase.Ready) return;
+    launchReadyBall(this.session);
     this.applyPhasePresentation();
   }
 
   private restartRun(): void {
     this.state = createInitialGameState();
     this.session = createSessionState();
+    launchReadyBall(this.session);
     this.updateLivesText();
     this.applyPhasePresentation();
   }
@@ -192,10 +197,10 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.session.phase === GamePhase.Ready) {
-      if (code === 'Space') {
-        launchReadyBall(this.session);
-        this.applyPhasePresentation();
-      }
+      if (this.pauseMenu.hasConfirmation()) this.handleConfirmationKey(code);
+      else if (code === 'Space') this.startRun();
+      else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
+      else this.navigatePauseMenu(code);
       return;
     }
     if (this.session.phase === GamePhase.Running) {
@@ -204,20 +209,61 @@ export class GameScene extends Phaser.Scene {
       }
       return;
     }
-    if (this.session.phase === GamePhase.LifeLost) return;
-    if (this.session.phase === GamePhase.GameOver) {
-      if (code === 'KeyR') this.restartRun();
+    if (this.session.phase === GamePhase.LifeLost) {
+      if (code === 'Space') this.continueLifeLostAttempt();
       return;
     }
     if (this.pauseMenu.hasConfirmation()) {
-      if (code === 'Escape') this.pauseMenu.cancelConfirmation();
-      else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
+      this.handleConfirmationKey(code);
+      return;
+    }
+    if (this.session.phase === GamePhase.GameOver) {
+      if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
       else this.navigatePauseMenu(code);
       return;
     }
-    if (code === 'Space' || code === 'Tab' || code === 'Escape') this.resumeGame();
+    if (code === 'Escape') this.resumeAfterEscapeKeyDown();
+    else if (code === 'Space' || code === 'Tab') this.resumeGame();
     else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
     else this.navigatePauseMenu(code);
+  }
+
+  private resumeAfterEscapeKeyDown(): void {
+    this.escapeResumePending = true;
+    resumeManualPause(this.session);
+    // Chromium finishes its native Pointer Lock escape handling on key-up. Resuming
+    // now but delaying only the lock request prevents that Escape from cancelling it.
+    this.applyPhasePresentation(false);
+  }
+
+  private handleShellKeyUp(code: string): void {
+    if (code !== 'Escape' || !this.escapeResumePending || this.session.phase !== GamePhase.Running) return;
+    this.escapeResumePending = false;
+    this.gameInput.restorePointerLock();
+  }
+
+  private handleConfirmationKey(code: string): void {
+    if (code === 'Escape') this.pauseMenu.cancelConfirmation();
+    else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
+    else this.navigatePauseMenu(code);
+  }
+
+  private handlePrimaryPointerDown(): boolean {
+    if (this.session.phase !== GamePhase.LifeLost) return false;
+    this.continueLifeLostAttempt();
+    return true;
+  }
+
+  private continueLifeLostAttempt(): void {
+    if (!continueLifeLost(this.state, this.session)) return;
+    this.applyPhasePresentation();
+  }
+
+  private getMenuMode(): 'START' | 'PAUSE' | 'GAME_OVER' | null {
+    if (this.session.phase === GamePhase.Ready) return 'START';
+    if (this.session.phase === GamePhase.Paused) return 'PAUSE';
+    if (this.session.phase === GamePhase.GameOver) return 'GAME_OVER';
+    return null;
   }
 
   private navigatePauseMenu(code: string): void {
@@ -264,10 +310,9 @@ export class GameScene extends Phaser.Scene {
     graphics.fillRect(field.right, field.top - wall, wall, field.bottom - field.top);
     graphics.fillRect(field.left - wall, field.top - wall, field.right - field.left + wall * 2, wall);
 
-    for (const row of this.state.brickField.rows) {
-      const colorIndex = row.visualVariant % BRICK_COLORS.length;
-      for (const brick of row.cells) {
-        if (!brick) continue;
+    for (const column of this.state.brickField.columns) {
+      for (const brick of column) {
+        const colorIndex = brick.visualVariant % BRICK_COLORS.length;
         graphics.fillStyle(BRICK_COLORS[colorIndex]);
         if (brick.y < field.top) {
           const visibleHeight = brick.y + brick.height - field.top;
@@ -307,9 +352,10 @@ export class GameScene extends Phaser.Scene {
     this.lastDebugFps = fps;
     this.lastDebugBallSpeed = ballSpeed;
     this.lastDebugBrickCount = brickCount;
+    const speedRange = getBrickDescentSpeedRange(this.state.difficultyLevel);
     this.debugText.setText(
       `FPS ${fps}  BALL ${ballSpeed} px/s\n`
-      + `BRICKS ${brickCount}  DESCENT ${GAME_CONFIG.bricks.descentSpeed.toFixed(1)}`,
+      + `BRICKS ${brickCount}  SPEEDS ${speedRange.minimum}–${speedRange.maximum}`,
     );
   }
 
@@ -342,9 +388,7 @@ export class GameScene extends Phaser.Scene {
 
   private getStatusMessage(): string | null {
     switch (this.session.phase) {
-      case GamePhase.Ready: return 'PRESS SPACE';
-      case GamePhase.LifeLost: return 'BALL LOST';
-      case GamePhase.GameOver: return 'GAME OVER\nPRESS R TO RESTART';
+      case GamePhase.LifeLost: return 'BALL LOST\n\nSPACE OR CLICK TO CONTINUE';
       default: return null;
     }
   }

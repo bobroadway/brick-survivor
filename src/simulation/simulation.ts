@@ -96,9 +96,9 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
   }
 
   let collided = false;
-  for (const row of state.brickField.rows) {
-    for (const brick of row.cells) {
-      if (!brick || !overlapsBrick(ball, brick)) continue;
+  for (const column of state.brickField.columns) {
+    for (const brick of column) {
+      if (!overlapsBrick(ball, brick)) continue;
       collideWithBrick(ball, brick, previousX, previousY);
       damageBrick(state.brickField, brick, 1);
       collided = true;
@@ -124,7 +124,9 @@ export function stepSimulation(
   input: SimulationInput,
   deltaSeconds: number,
 ): SimulationStepOutcome {
-  if (advanceBrickField(state.brickField, deltaSeconds)) return SimulationStepOutcome.BrickOverflow;
+  if (advanceBrickField(state.brickField, deltaSeconds, state.difficultyLevel)) {
+    return SimulationStepOutcome.BrickOverflow;
+  }
   updatePaddle(state, input, deltaSeconds);
   for (let index = state.balls.length - 1; index >= 0; index -= 1) {
     if (updateBall(state, state.balls[index], deltaSeconds)) state.balls.splice(index, 1);

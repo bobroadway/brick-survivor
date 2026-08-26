@@ -39,6 +39,7 @@ export class GameInput {
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
     this.heldMovementCodes.delete(event.code);
     this.heldShiftCodes.delete(event.code);
+    if (SHELL_CODES.has(event.code)) this.onShellKeyUp(event.code);
   };
 
   private readonly handleMouseMove = (event: MouseEvent): void => {
@@ -47,6 +48,12 @@ export class GameInput {
     if (canvasWidth === 0) return;
     const physicalToLogicalScale = this.scene.scale.gameSize.width / canvasWidth;
     this.pendingMouseDisplacement += event.movementX * physicalToLogicalScale * GAME_CONFIG.input.mouseSensitivity;
+  };
+
+  private readonly handleMouseDown = (event: MouseEvent): void => {
+    if (event.button !== 0 || !this.onPrimaryPointerDown()) return;
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   private readonly handlePointerLockChange = (): void => {
@@ -70,20 +77,27 @@ export class GameInput {
     private readonly scene: Phaser.Scene,
     private readonly isRunning: () => boolean,
     private readonly onShellKeyDown: (code: string) => void,
+    private readonly onShellKeyUp: (code: string) => void,
     private readonly onUnexpectedInputLoss: () => void,
+    private readonly onPrimaryPointerDown: () => boolean,
   ) {
     if (!scene.input.keyboard) throw new Error('Keyboard input is unavailable');
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('mousemove', this.handleMouseMove);
+    scene.game.canvas.addEventListener('mousedown', this.handleMouseDown);
     window.addEventListener('blur', this.handleFocusLoss);
     document.addEventListener('pointerlockchange', this.handlePointerLockChange);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
-  enterRunning(): void {
+  enterRunning(requestPointerLock = true): void {
     this.resetMovementInput();
-    this.requestPointerLock();
+    if (requestPointerLock) this.requestPointerLock();
+  }
+
+  restorePointerLock(): void {
+    if (this.isRunning()) this.requestPointerLock();
   }
 
   private requestPointerLock(): void {
@@ -139,6 +153,7 @@ export class GameInput {
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
     window.removeEventListener('mousemove', this.handleMouseMove);
+    this.scene.game.canvas.removeEventListener('mousedown', this.handleMouseDown);
     window.removeEventListener('blur', this.handleFocusLoss);
     document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);

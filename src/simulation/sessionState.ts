@@ -32,16 +32,14 @@ export function launchReadyBall(session: SessionState): void {
   if (session.phase === GamePhase.Ready) session.phase = GamePhase.Running;
 }
 
-export function beginLifeLost(session: SessionState, delaySeconds: number): void {
+export function beginLifeLost(session: SessionState): void {
   session.phase = GamePhase.LifeLost;
-  session.phaseTimerSeconds = delaySeconds;
+  session.phaseTimerSeconds = 0;
 }
 
-export function advanceLifeLost(session: SessionState, deltaSeconds: number): boolean {
+export function continueAfterLifeLost(session: SessionState): boolean {
   if (session.phase !== GamePhase.LifeLost) return false;
-  session.phaseTimerSeconds = Math.max(0, session.phaseTimerSeconds - deltaSeconds);
-  if (session.phaseTimerSeconds > 0) return false;
-  session.phase = GamePhase.Ready;
+  session.phase = GamePhase.Running;
   return true;
 }
 

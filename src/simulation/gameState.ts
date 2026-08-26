@@ -16,6 +16,7 @@ export interface GameState {
   brickField: BrickFieldState;
   lives: number;
   nextBallId: number;
+  difficultyLevel: number;
 }
 
 export function createInitialGameState(): GameState {
@@ -36,6 +37,7 @@ export function createInitialGameState(): GameState {
     brickField: createBrickField(),
     lives: GAME_CONFIG.run.startingLives,
     nextBallId: 2,
+    difficultyLevel: GAME_CONFIG.difficulty.currentLevel,
   };
 }
 

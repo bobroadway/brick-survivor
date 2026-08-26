@@ -1,37 +1,46 @@
-export type PauseMenuFocus = 'RESUME' | 'WINDOWED' | 'FULLSCREEN' | 'RESTART' | 'QUIT';
+export type MenuMode = 'START' | 'PAUSE' | 'GAME_OVER';
+export type MenuFocus = 'START' | 'RESUME' | 'WINDOWED' | 'FULLSCREEN' | 'RESTART' | 'QUIT';
 export type ConfirmationKind = 'RESTART' | 'QUIT';
 export type ConfirmationFocus = 'CONFIRM' | 'CANCEL';
 
 export interface PauseMenuState {
-  focus: PauseMenuFocus;
+  focus: MenuFocus;
   confirmation: ConfirmationKind | null;
   confirmationFocus: ConfirmationFocus;
 }
 
-const ROWS: PauseMenuFocus[][] = [
-  ['RESUME'],
-  ['WINDOWED', 'FULLSCREEN'],
-  ['RESTART'],
-  ['QUIT'],
-];
+const ROWS_BY_MODE: Record<MenuMode, MenuFocus[][]> = {
+  START: [['START'], ['WINDOWED', 'FULLSCREEN'], ['QUIT']],
+  PAUSE: [['RESUME'], ['WINDOWED', 'FULLSCREEN'], ['RESTART'], ['QUIT']],
+  GAME_OVER: [['WINDOWED', 'FULLSCREEN'], ['RESTART'], ['QUIT']],
+};
+
+const DEFAULT_FOCUS: Record<MenuMode, MenuFocus> = {
+  START: 'START', PAUSE: 'RESUME', GAME_OVER: 'RESTART',
+};
 
 export function createPauseMenuState(): PauseMenuState {
-  return { focus: 'RESUME', confirmation: null, confirmationFocus: 'CANCEL' };
+  return { focus: 'START', confirmation: null, confirmationFocus: 'CANCEL' };
 }
 
-export function resetPauseMenuState(state: PauseMenuState): void {
-  state.focus = 'RESUME';
+export function resetPauseMenuState(state: PauseMenuState, mode: MenuMode): void {
+  state.focus = DEFAULT_FOCUS[mode];
   state.confirmation = null;
   state.confirmationFocus = 'CANCEL';
 }
 
-export function movePauseMenuVertical(state: PauseMenuState, direction: -1 | 1): void {
+export function isFocusAvailable(mode: MenuMode, focus: MenuFocus): boolean {
+  return ROWS_BY_MODE[mode].some((row) => row.includes(focus));
+}
+
+export function movePauseMenuVertical(state: PauseMenuState, mode: MenuMode, direction: -1 | 1): void {
   if (state.confirmation) {
     state.confirmationFocus = state.confirmationFocus === 'CONFIRM' ? 'CANCEL' : 'CONFIRM';
     return;
   }
-  const rowIndex = ROWS.findIndex((row) => row.includes(state.focus));
-  const nextRow = ROWS[(rowIndex + direction + ROWS.length) % ROWS.length];
+  const rows = ROWS_BY_MODE[mode];
+  const rowIndex = rows.findIndex((row) => row.includes(state.focus));
+  const nextRow = rows[(rowIndex + direction + rows.length) % rows.length];
   state.focus = nextRow.includes(state.focus) ? state.focus : nextRow[0];
 }
 
