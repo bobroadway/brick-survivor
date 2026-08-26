@@ -16,6 +16,7 @@ export class PowerChoiceOverlay {
   private readonly rerollText: Phaser.GameObjects.Text;
   private state?: GameState;
   private focusIndex = 0;
+  private interactionEnabled = false;
 
   constructor(
     scene: Phaser.Scene,
@@ -52,17 +53,34 @@ export class PowerChoiceOverlay {
     this.container.add([this.rerollBackground, this.rerollText]);
   }
 
-  show(state: GameState): void {
+  show(state: GameState, interactionEnabled = true, alpha = 1): void {
     this.state = state;
     this.focusIndex = 0;
-    this.container.setVisible(true);
+    this.interactionEnabled = interactionEnabled;
+    this.container.setVisible(true).setAlpha(alpha);
     this.refresh();
   }
 
-  hide(): void { this.container.setVisible(false); }
+  hide(): void {
+    this.interactionEnabled = false;
+    this.container.setVisible(false);
+  }
+
+  setPresentation(alpha: number, interactionEnabled: boolean): void {
+    const interactionChanged = this.interactionEnabled !== interactionEnabled;
+    this.interactionEnabled = interactionEnabled;
+    this.container.setVisible(alpha > 0).setAlpha(Math.max(0, Math.min(1, alpha)));
+    if (!interactionChanged) return;
+    if (interactionEnabled) {
+      this.refresh();
+    } else {
+      for (const visual of this.choices) visual.background.disableInteractive();
+      this.rerollBackground.disableInteractive();
+    }
+  }
 
   move(direction: -1 | 1): void {
-    if (!this.state) return;
+    if (!this.state || !this.interactionEnabled) return;
     const focusable = this.state.powers.currentChoices.map((_, index) => index);
     if (this.state.powers.rerollsRemaining > 0) focusable.push(3);
     if (focusable.length === 0) return;
@@ -74,7 +92,7 @@ export class PowerChoiceOverlay {
   activateFocused(): void { this.activateIndex(this.focusIndex); }
 
   private activateIndex(index: number): void {
-    if (!this.state) return;
+    if (!this.state || !this.interactionEnabled) return;
     const id = this.state.powers.currentChoices[index];
     if (id) this.select(id);
     else if (index === 3) this.reroll();
@@ -89,13 +107,16 @@ export class PowerChoiceOverlay {
       visual.background.setVisible(Boolean(id));
       visual.text.setVisible(Boolean(id));
       if (!id) { visual.background.disableInteractive(); continue; }
-      visual.background.setInteractive({ useHandCursor: true });
+      if (this.interactionEnabled) visual.background.setInteractive({ useHandCursor: true });
+      else visual.background.disableInteractive();
       const definition = getPowerDefinition(id);
       const nextLevel = getPowerLevel(this.state.powers, id) + 1;
       visual.text.setText(`${definition.name}\n\nLv${nextLevel}\n\n${getPowerDescription(id, nextLevel, true)}`);
       visual.background.setStrokeStyle(this.focusIndex === index ? 3 : 2, this.focusIndex === index ? 0xe4c46c : 0x53637a);
     }
     const rerolls = this.state.powers.rerollsRemaining;
+    if (this.interactionEnabled && rerolls > 0) this.rerollBackground.setInteractive({ useHandCursor: true });
+    else this.rerollBackground.disableInteractive();
     this.rerollText.setText(`REROLL (${rerolls})`).setAlpha(rerolls > 0 ? 1 : 0.45);
     this.rerollBackground.setFillStyle(rerolls > 0 ? 0x273243 : 0x1b202a, 0.98);
     this.rerollBackground.setStrokeStyle(this.focusIndex === 3 && rerolls > 0 ? 3 : 2, this.focusIndex === 3 && rerolls > 0 ? 0xe4c46c : 0x53637a);

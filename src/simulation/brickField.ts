@@ -49,12 +49,32 @@ function generateSpeedClass(field: BrickFieldState): BrickSpeedClass {
   return distribution[distribution.length - 1].speedClass;
 }
 
-function generateFormation(field: BrickFieldState, y: number, insertAtTop: boolean): void {
+export function getBrickOccupancyRange(level: number): { minimum: number; maximum: number } {
+  const config = GAME_CONFIG.bricks;
+  const progress = Math.max(0, Math.min(
+    1,
+    (level - config.densityStartLevel) / (config.densityFullLevel - config.densityStartLevel),
+  ));
+  return {
+    minimum: Math.round(config.densityStartMinOccupancy
+      + (config.densityFullMinOccupancy - config.densityStartMinOccupancy) * progress),
+    maximum: Math.round(config.densityStartMaxOccupancy
+      + (config.densityFullMaxOccupancy - config.densityStartMaxOccupancy) * progress),
+  };
+}
+
+function generateFormation(
+  field: BrickFieldState,
+  y: number,
+  insertAtTop: boolean,
+  level: number,
+): void {
   const config = GAME_CONFIG.bricks;
   const rowId = field.nextRowId;
   field.nextRowId += 1;
-  const targetCount = config.minimumBricksPerRow
-    + Math.floor(nextRandom(field) * (config.maximumBricksPerRow - config.minimumBricksPerRow + 1));
+  const occupancy = getBrickOccupancyRange(level);
+  const targetCount = occupancy.minimum
+    + Math.floor(nextRandom(field) * (occupancy.maximum - occupancy.minimum + 1));
   const rankedColumns = Array.from({ length: config.columns }, (_, column) => ({
     column,
     rank: nextRandom(field),
@@ -104,9 +124,14 @@ export function createBrickField(): BrickFieldState {
     nextRowId: 1,
   };
   for (let row = 0; row < GAME_CONFIG.bricks.initialRowCount; row += 1) {
-    generateFormation(field, GAME_CONFIG.bricks.fieldTopY + row * getBrickRowPitch(), false);
+    generateFormation(
+      field,
+      GAME_CONFIG.bricks.fieldTopY + row * getBrickRowPitch(),
+      false,
+      GAME_CONFIG.progression.startingLevel,
+    );
   }
-  generateFormation(field, getBrickSpawnY(), true);
+  generateFormation(field, getBrickSpawnY(), true, GAME_CONFIG.progression.startingLevel);
   return field;
 }
 
@@ -141,7 +166,7 @@ export function advanceBrickField(
 
   while (field.spawnCycleProgress >= 1) {
     field.spawnCycleProgress -= 1;
-    generateFormation(field, getBrickSpawnY(), true);
+    generateFormation(field, getBrickSpawnY(), true, difficultyLevel);
   }
   return false;
 }

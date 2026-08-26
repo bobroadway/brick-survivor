@@ -210,8 +210,15 @@ export class GameScene extends Phaser.Scene {
     this.pauseHintText.setVisible(running);
     if (menuMode) this.pauseMenu.show(menuMode);
     else this.pauseMenu.hide();
-    if (this.session.phase === GamePhase.LevelUp) this.powerChoiceOverlay.show(this.state);
-    else this.powerChoiceOverlay.hide();
+    if (this.session.phase === GamePhase.LevelUp) {
+      this.powerChoiceOverlay.show(this.state, true, 1);
+    } else if (this.session.phase === GamePhase.LevelUpSlowdown) {
+      this.powerChoiceOverlay.show(this.state, false, this.getLevelUpOverlayOpacity());
+    } else if (this.session.phase === GamePhase.LevelUpSpeedup) {
+      this.powerChoiceOverlay.setPresentation(this.getLevelUpOverlayOpacity(), false);
+    } else {
+      this.powerChoiceOverlay.hide();
+    }
     if (this.session.phase === GamePhase.Build) this.buildOverlay.show(this.state);
     else this.buildOverlay.hide();
     const statusMessage = this.getStatusMessage();
@@ -502,7 +509,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private beginLevelUpSlowdown(): void {
+    if (!prepareNextPowerSelection(this.state.powers)) return;
     beginLevelUpSlowdown(this.session);
+    this.powerChoiceOverlay.show(this.state, false, 0);
     this.levelUpGhosts.clear();
     for (const ball of this.state.balls) {
       ball.positionHistory.length = 0;
@@ -524,22 +533,34 @@ export class GameScene extends Phaser.Scene {
   private advanceLevelUpTransition(realDeltaSeconds: number): void {
     if (this.session.phase === GamePhase.LevelUpSlowdown) {
       this.session.phaseTimerSeconds += realDeltaSeconds;
+      this.powerChoiceOverlay.setPresentation(this.getLevelUpOverlayOpacity(), false);
       if (this.session.phaseTimerSeconds < GAME_CONFIG.levelUpTransition.slowdownDurationSeconds) return;
       this.captureLevelUpTransitionGhosts();
-      if (!prepareNextPowerSelection(this.state.powers)) {
-        enterLevelUp(this.session);
-        beginLevelUpSpeedup(this.session);
-        return;
-      }
       enterLevelUp(this.session);
       this.applyPhasePresentation();
       return;
     }
     if (this.session.phase !== GamePhase.LevelUpSpeedup) return;
     this.session.phaseTimerSeconds += realDeltaSeconds;
+    this.powerChoiceOverlay.setPresentation(this.getLevelUpOverlayOpacity(), false);
     if (this.session.phaseTimerSeconds < GAME_CONFIG.levelUpTransition.speedupDurationSeconds) return;
     finishLevelUpSpeedup(this.session);
     this.clearLevelUpTransitionGhosts();
+    this.powerChoiceOverlay.hide();
+  }
+
+  private getLevelUpOverlayOpacity(): number {
+    const transition = GAME_CONFIG.levelUpTransition;
+    if (this.session.phase === GamePhase.LevelUpSlowdown) {
+      const progress = Math.min(1, this.session.phaseTimerSeconds / transition.slowdownDurationSeconds);
+      return progress * progress;
+    }
+    if (this.session.phase === GamePhase.LevelUpSpeedup) {
+      const progress = Math.min(1, this.session.phaseTimerSeconds / transition.overlayFadeOutDurationSeconds);
+      const smoothProgress = progress * progress * (3 - 2 * progress);
+      return 1 - smoothProgress;
+    }
+    return this.session.phase === GamePhase.LevelUp ? 1 : 0;
   }
 
   private captureLevelUpTransitionGhosts(): void {
