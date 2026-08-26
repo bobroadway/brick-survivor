@@ -4,7 +4,8 @@ export enum GamePhase {
   Paused = 'PAUSED',
   LifeLost = 'LIFE_LOST',
   GameOver = 'GAME_OVER',
-  // Future suspended phases such as LEVEL_UP can be added here.
+  LevelUp = 'LEVEL_UP',
+  Build = 'BUILD',
 }
 
 export interface SessionState {
@@ -45,4 +46,24 @@ export function continueAfterLifeLost(session: SessionState): boolean {
 
 export function enterGameOver(session: SessionState): void {
   session.phase = GamePhase.GameOver;
+}
+
+export function enterLevelUp(session: SessionState): void {
+  if (session.phase === GamePhase.Running) session.phase = GamePhase.LevelUp;
+}
+
+export function enterBuild(session: SessionState): void {
+  if (session.phase === GamePhase.Running) session.phase = GamePhase.Build;
+}
+
+export function leaveBuild(session: SessionState): void {
+  if (session.phase === GamePhase.Build) session.phase = GamePhase.Running;
+}
+
+export function buildToPause(session: SessionState): void {
+  if (session.phase === GamePhase.Build) session.phase = GamePhase.Paused;
+}
+
+export function finishLevelUp(session: SessionState): void {
+  if (session.phase === GamePhase.LevelUp) session.phase = GamePhase.Running;
 }

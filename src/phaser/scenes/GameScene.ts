@@ -4,6 +4,7 @@ import { GAME_CONFIG } from '../../simulation/config';
 import { getBrickDescentSpeedRange } from '../../simulation/difficulty';
 import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
+import { acquirePower, prepareNextPowerSelection, rerollPowerChoices, type PowerId } from '../../simulation/powers';
 import {
   getBallSpeed,
   SimulationStepOutcome,
@@ -12,17 +13,24 @@ import {
 } from '../../simulation/simulation';
 import {
   createSessionState,
+  buildToPause,
+  enterBuild,
   enterGameOver,
+  enterLevelUp,
+  finishLevelUp,
   GamePhase,
   isSimulationRunning,
   launchReadyBall,
+  leaveBuild,
   pauseManually,
   resumeManualPause,
   type SessionState,
 } from '../../simulation/sessionState';
 import { GameInput } from '../input/GameInput';
 import { RenderQualityManager } from '../rendering/RenderQualityManager';
+import { BuildOverlay } from '../ui/BuildOverlay';
 import { PauseMenu } from '../ui/PauseMenu';
+import { PowerChoiceOverlay } from '../ui/PowerChoiceOverlay';
 
 const BRICK_COLORS = [0x607d9d, 0x657c91, 0x6c738c, 0x756b83] as const;
 
@@ -38,12 +46,13 @@ export class GameScene extends Phaser.Scene {
   private levelText!: Phaser.GameObjects.Text;
   private xpText!: Phaser.GameObjects.Text;
   private xpBarFill!: Phaser.GameObjects.Rectangle;
-  private levelUpText!: Phaser.GameObjects.Text;
   private pauseHintText!: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
   private statusShade!: Phaser.GameObjects.Rectangle;
   private statusText!: Phaser.GameObjects.Text;
   private pauseMenu!: PauseMenu;
+  private powerChoiceOverlay!: PowerChoiceOverlay;
+  private buildOverlay!: BuildOverlay;
   private removeDisplayModeListener?: () => void;
   private displayMode: DisplayMode = 'WINDOWED';
   private accumulator = 0;
@@ -58,8 +67,6 @@ export class GameScene extends Phaser.Scene {
   private lastDebugLevel = -1;
   private lastHudLevel = -1;
   private lastHudXp = -1;
-  private lastObservedLevel = 1;
-  private levelUpNoticeRemaining = 0;
 
   constructor() { super('GameScene'); }
 
@@ -92,9 +99,6 @@ export class GameScene extends Phaser.Scene {
     this.add.rectangle(365, 702, 92, 6, 0x273243).setOrigin(0, 0.5).setDepth(10);
     this.xpBarFill = this.add.rectangle(365, 702, 92, 6, 0x78c6d0)
       .setOrigin(0, 0.5).setDepth(11);
-    this.levelUpText = this.renderQuality.addText(GAME_CONFIG.width / 2, 260, '', {
-      color: '#e4c46c', fontFamily: 'Arial, sans-serif', fontSize: '38px', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(15).setVisible(false);
     this.pauseHintText = this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'ESC — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0).setDepth(10);
@@ -116,6 +120,12 @@ export class GameScene extends Phaser.Scene {
       restart: () => this.restartRun(),
       quit: () => void window.desktop?.quit(),
     });
+    this.powerChoiceOverlay = new PowerChoiceOverlay(
+      this, this.renderQuality,
+      (id) => this.selectPower(id),
+      () => this.rerollPowers(),
+    );
+    this.buildOverlay = new BuildOverlay(this, this.renderQuality);
     if (window.desktop) {
       void window.desktop.getDisplayMode().then((mode) => {
         this.displayMode = mode;
@@ -134,7 +144,6 @@ export class GameScene extends Phaser.Scene {
       this.removeDisplayModeListener?.();
     });
     this.updateLivesText();
-    this.lastObservedLevel = this.state.progression.level;
     this.updateProgressionHud();
     this.applyPhasePresentation();
     this.drawGame();
@@ -148,7 +157,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     const frameSeconds = Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
-    this.updateLevelUpNotice(frameSeconds);
     this.accumulator += frameSeconds;
     const stepCount = Math.floor(this.accumulator / GAME_CONFIG.fixedStepSeconds);
     if (stepCount === 0) return;
@@ -156,10 +164,6 @@ export class GameScene extends Phaser.Scene {
     this.simulationInput.mouseDisplacement /= stepCount;
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
       const outcome = stepSimulation(this.state, this.simulationInput, GAME_CONFIG.fixedStepSeconds);
-      if (this.state.progression.level > this.lastObservedLevel) {
-        this.showLevelUpNotice(this.state.progression.level);
-        this.lastObservedLevel = this.state.progression.level;
-      }
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
       if (outcome === SimulationStepOutcome.BrickOverflow) {
         enterGameOver(this.session);
@@ -168,6 +172,11 @@ export class GameScene extends Phaser.Scene {
       }
       if (outcome === SimulationStepOutcome.FinalBallLost) {
         this.handleFinalBallLost();
+        break;
+      }
+      if (this.state.powers.pendingSelections > 0 && prepareNextPowerSelection(this.state.powers)) {
+        enterLevelUp(this.session);
+        this.applyPhasePresentation();
         break;
       }
     }
@@ -186,6 +195,10 @@ export class GameScene extends Phaser.Scene {
     this.pauseHintText.setVisible(running);
     if (menuMode) this.pauseMenu.show(menuMode);
     else this.pauseMenu.hide();
+    if (this.session.phase === GamePhase.LevelUp) this.powerChoiceOverlay.show(this.state);
+    else this.powerChoiceOverlay.hide();
+    if (this.session.phase === GamePhase.Build) this.buildOverlay.show(this.state);
+    else this.buildOverlay.hide();
     const statusMessage = this.getStatusMessage();
     this.statusShade.setVisible(statusMessage !== null);
     this.statusText.setText(statusMessage ?? '').setVisible(statusMessage !== null);
@@ -215,9 +228,6 @@ export class GameScene extends Phaser.Scene {
     this.session = createSessionState();
     launchReadyBall(this.session);
     this.updateLivesText();
-    this.lastObservedLevel = this.state.progression.level;
-    this.levelUpNoticeRemaining = 0;
-    this.levelUpText.setVisible(false);
     this.updateProgressionHud();
     this.applyPhasePresentation();
   }
@@ -235,13 +245,33 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.session.phase === GamePhase.Running) {
-      if (['Tab', 'Escape', 'Enter', 'NumpadEnter'].includes(code)) {
+      if (code === 'Tab') {
+        enterBuild(this.session);
+        this.applyPhasePresentation();
+      } else if (['Escape', 'Enter', 'NumpadEnter'].includes(code)) {
         this.pauseIfRunning();
       }
       return;
     }
     if (this.session.phase === GamePhase.LifeLost) {
       if (code === 'Space') this.continueLifeLostAttempt();
+      return;
+    }
+    if (this.session.phase === GamePhase.LevelUp) {
+      if (code === 'Enter' || code === 'NumpadEnter') this.powerChoiceOverlay.activateFocused();
+      else if (code === 'KeyR') this.rerollPowers();
+      else if (['ArrowLeft', 'ArrowUp', 'KeyA', 'KeyW'].includes(code)) this.powerChoiceOverlay.move(-1);
+      else if (['ArrowRight', 'ArrowDown', 'KeyD', 'KeyS'].includes(code)) this.powerChoiceOverlay.move(1);
+      return;
+    }
+    if (this.session.phase === GamePhase.Build) {
+      if (code === 'Tab') {
+        leaveBuild(this.session);
+        this.applyPhasePresentation();
+      } else if (code === 'Escape') {
+        buildToPause(this.session);
+        this.applyPhasePresentation();
+      }
       return;
     }
     if (this.pauseMenu.hasConfirmation()) {
@@ -268,6 +298,21 @@ export class GameScene extends Phaser.Scene {
     if (this.session.phase !== GamePhase.LifeLost) return false;
     this.continueLifeLostAttempt();
     return true;
+  }
+
+  private selectPower(id: PowerId): void {
+    if (this.session.phase !== GamePhase.LevelUp || !acquirePower(this.state, id)) return;
+    if (prepareNextPowerSelection(this.state.powers)) {
+      this.powerChoiceOverlay.show(this.state);
+      return;
+    }
+    finishLevelUp(this.session);
+    this.applyPhasePresentation();
+  }
+
+  private rerollPowers(): void {
+    if (this.session.phase !== GamePhase.LevelUp || !rerollPowerChoices(this.state.powers)) return;
+    this.powerChoiceOverlay.show(this.state);
   }
 
   private continueLifeLostAttempt(): void {
@@ -338,6 +383,20 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
+    graphics.lineStyle(3, 0xef5350, 1);
+    for (const projectile of this.state.projectiles) {
+      const speed = Math.hypot(projectile.velocity.x, projectile.velocity.y);
+      const directionX = speed > 0 ? projectile.velocity.x / speed : 0;
+      const directionY = speed > 0 ? projectile.velocity.y / speed : -1;
+      graphics.lineBetween(
+        projectile.x,
+        projectile.y,
+        projectile.x - directionX * GAME_CONFIG.powers.projectileLength,
+        projectile.y - directionY * GAME_CONFIG.powers.projectileLength,
+      );
+    }
+    graphics.lineStyle(4, 0xef5350, 0.75);
+    for (const effect of this.state.fireEffects) graphics.lineBetween(effect.x1, effect.y, effect.x2, effect.y);
     const paddle = this.state.paddle;
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);
@@ -412,18 +471,6 @@ export class GameScene extends Phaser.Scene {
     this.levelText.setText(`LEVEL ${level}`);
     this.xpText.setText(`XP ${currentXp} / ${xpRequiredForNextLevel}`);
     this.xpBarFill.setScale(currentXp / xpRequiredForNextLevel, 1);
-  }
-
-  private showLevelUpNotice(level: number): void {
-    this.levelUpNoticeRemaining = GAME_CONFIG.progression.levelUpNoticeSeconds;
-    this.levelUpText.setText(`LEVEL ${level}`).setAlpha(1).setVisible(true);
-  }
-
-  private updateLevelUpNotice(deltaSeconds: number): void {
-    if (this.levelUpNoticeRemaining <= 0) return;
-    this.levelUpNoticeRemaining = Math.max(0, this.levelUpNoticeRemaining - deltaSeconds);
-    if (this.levelUpNoticeRemaining === 0) this.levelUpText.setVisible(false);
-    else this.levelUpText.setAlpha(Math.min(1, this.levelUpNoticeRemaining / 0.3));
   }
 
   private getStatusMessage(): string | null {

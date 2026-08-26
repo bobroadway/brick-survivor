@@ -2,21 +2,34 @@ import { GAME_CONFIG } from './config';
 
 export type BrickSpeedClass = 'SLOW' | 'MEDIUM' | 'FAST' | 'RUSH';
 
-export function resolveBrickDescentSpeed(speedClass: BrickSpeedClass, level: number): number {
-  const milestones = GAME_CONFIG.difficulty.brickSpeedMilestones;
-  const requestedLevel = Math.max(level, milestones[0].level);
-  const finalMilestone = milestones[milestones.length - 1];
-  if (requestedLevel >= finalMilestone.level) return finalMilestone.speeds[speedClass];
+export function getTargetAverageBrickSpeed(level: number): number {
+  const normalizedLevel = Math.max(GAME_CONFIG.progression.startingLevel, level);
+  return GAME_CONFIG.difficulty.baseAverageBrickSpeed
+    + (normalizedLevel - GAME_CONFIG.progression.startingLevel)
+      * GAME_CONFIG.difficulty.averageSpeedGrowthPerLevel;
+}
 
-  for (let index = 1; index < milestones.length; index += 1) {
-    const upper = milestones[index];
-    if (requestedLevel > upper.level) continue;
-    const lower = milestones[index - 1];
-    const progress = (requestedLevel - lower.level) / (upper.level - lower.level);
-    return lower.speeds[speedClass]
-      + (upper.speeds[speedClass] - lower.speeds[speedClass]) * progress;
+export function getBrickSpeedRange(level: number): number {
+  const normalizedLevel = Math.max(GAME_CONFIG.progression.startingLevel, level);
+  return GAME_CONFIG.difficulty.baseSpeedRange
+    + (normalizedLevel - GAME_CONFIG.progression.startingLevel)
+      * GAME_CONFIG.difficulty.speedRangeGrowthPerLevel;
+}
+
+function getWeightedNormalizedClassPosition(): number {
+  let weightedPosition = 0;
+  let totalWeight = 0;
+  for (const { speedClass, weight } of GAME_CONFIG.bricks.speedClassDistribution) {
+    weightedPosition += GAME_CONFIG.difficulty.speedClassRangePositions[speedClass] * weight;
+    totalWeight += weight;
   }
-  return finalMilestone.speeds[speedClass];
+  return weightedPosition / totalWeight;
+}
+
+export function resolveBrickDescentSpeed(speedClass: BrickSpeedClass, level: number): number {
+  const range = getBrickSpeedRange(level);
+  const slowSpeed = getTargetAverageBrickSpeed(level) - getWeightedNormalizedClassPosition() * range;
+  return slowSpeed + GAME_CONFIG.difficulty.speedClassRangePositions[speedClass] * range;
 }
 
 export function getWeightedAverageBrickSpeed(level: number): number {
@@ -31,16 +44,11 @@ export function getWeightedAverageBrickSpeed(level: number): number {
 }
 
 export function getDifficultyFactor(level: number): number {
-  return getWeightedAverageBrickSpeed(level)
-    / getWeightedAverageBrickSpeed(GAME_CONFIG.progression.startingLevel);
+  return getTargetAverageBrickSpeed(level) / GAME_CONFIG.difficulty.baseAverageBrickSpeed;
 }
 
 export function getRowSpawnInterval(level: number): number {
   return GAME_CONFIG.bricks.baseRowSpawnIntervalSeconds / getDifficultyFactor(level);
-}
-
-export function getXpRequiredForNextLevel(level: number): number {
-  return Math.max(1, Math.round(GAME_CONFIG.progression.baseXpToNextLevel * getDifficultyFactor(level)));
 }
 
 export function getBrickDescentSpeedRange(level: number): { minimum: number; maximum: number } {
