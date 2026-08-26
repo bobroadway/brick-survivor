@@ -1,10 +1,17 @@
 import Phaser from 'phaser';
+import { getActiveBrickCount } from '../../simulation/brickField';
 import { GAME_CONFIG } from '../../simulation/config';
 import { resolveFinalBallLoss, updateLifeLostTransition } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
-import { getBallSpeed, spawnDebugBall, stepSimulation, type SimulationInput } from '../../simulation/simulation';
+import {
+  getBallSpeed,
+  SimulationStepOutcome,
+  stepSimulation,
+  type SimulationInput,
+} from '../../simulation/simulation';
 import {
   createSessionState,
+  enterGameOver,
   GamePhase,
   isSimulationRunning,
   launchReadyBall,
@@ -41,6 +48,7 @@ export class GameScene extends Phaser.Scene {
   };
   private lastDebugFps = -1;
   private lastDebugBallSpeed = -1;
+  private lastDebugBrickCount = -1;
 
   constructor() { super('GameScene'); }
 
@@ -56,14 +64,14 @@ export class GameScene extends Phaser.Scene {
       () => this.pauseIfRunning(),
     );
     if (GAME_CONFIG.debug.enabled) {
-      this.debugText = this.renderQuality.addText(52, 46, '', {
+      this.debugText = this.renderQuality.addText(470, 680, '', {
         color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
       }).setDepth(10);
     }
-    this.livesText = this.renderQuality.addText(52, 68, '', {
+    this.livesText = this.renderQuality.addText(52, 690, '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
     }).setDepth(10);
-    this.renderQuality.addText(GAME_CONFIG.width - 54, 48, 'TAB — PAUSE', {
+    this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'TAB — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0).setDepth(10);
     this.pauseShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.58)
@@ -103,6 +111,7 @@ export class GameScene extends Phaser.Scene {
     this.updateLivesText();
     this.applyPhasePresentation();
     this.drawGame();
+    this.updateDebugText();
   }
 
   update(_time: number, deltaMilliseconds: number): void {
@@ -127,9 +136,14 @@ export class GameScene extends Phaser.Scene {
     this.gameInput.readSimulationInput(this.simulationInput);
     this.simulationInput.mouseDisplacement /= stepCount;
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
-      const finalBallLost = stepSimulation(this.state, this.simulationInput, GAME_CONFIG.fixedStepSeconds);
+      const outcome = stepSimulation(this.state, this.simulationInput, GAME_CONFIG.fixedStepSeconds);
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
-      if (finalBallLost) {
+      if (outcome === SimulationStepOutcome.BrickOverflow) {
+        enterGameOver(this.session);
+        this.applyPhasePresentation();
+        break;
+      }
+      if (outcome === SimulationStepOutcome.FinalBallLost) {
         this.handleFinalBallLost();
         break;
       }
@@ -185,10 +199,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.session.phase === GamePhase.Running) {
-      if (code === 'KeyB') {
-        spawnDebugBall(this.state);
-        this.drawGame();
-      } else if (['Tab', 'Escape', 'Enter', 'NumpadEnter'].includes(code)) {
+      if (['Tab', 'Escape', 'Enter', 'NumpadEnter'].includes(code)) {
         this.pauseIfRunning();
       }
       return;
@@ -253,11 +264,19 @@ export class GameScene extends Phaser.Scene {
     graphics.fillRect(field.right, field.top - wall, wall, field.bottom - field.top);
     graphics.fillRect(field.left - wall, field.top - wall, field.right - field.left + wall * 2, wall);
 
-    for (const brick of this.state.bricks) {
-      graphics.fillStyle(BRICK_COLORS[brick.row % BRICK_COLORS.length]);
-      graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+    for (const row of this.state.brickField.rows) {
+      const colorIndex = row.visualVariant % BRICK_COLORS.length;
+      for (const brick of row.cells) {
+        if (!brick) continue;
+        graphics.fillStyle(BRICK_COLORS[colorIndex]);
+        if (brick.y < field.top) {
+          const visibleHeight = brick.y + brick.height - field.top;
+          if (visibleHeight > 0) graphics.fillRect(brick.x, field.top, brick.width, visibleHeight);
+        } else {
+          graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+        }
+      }
     }
-
     const paddle = this.state.paddle;
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);
@@ -279,10 +298,19 @@ export class GameScene extends Phaser.Scene {
     if (!this.debugText) return;
     const fps = Math.round(this.game.loop.actualFps);
     const ballSpeed = this.state.balls[0] ? Math.round(getBallSpeed(this.state.balls[0])) : 0;
-    if (fps === this.lastDebugFps && ballSpeed === this.lastDebugBallSpeed) return;
+    const brickCount = getActiveBrickCount(this.state.brickField);
+    if (
+      fps === this.lastDebugFps
+      && ballSpeed === this.lastDebugBallSpeed
+      && brickCount === this.lastDebugBrickCount
+    ) return;
     this.lastDebugFps = fps;
     this.lastDebugBallSpeed = ballSpeed;
-    this.debugText.setText(`FPS ${fps}  BALL ${ballSpeed} px/s`);
+    this.lastDebugBrickCount = brickCount;
+    this.debugText.setText(
+      `FPS ${fps}  BALL ${ballSpeed} px/s\n`
+      + `BRICKS ${brickCount}  DESCENT ${GAME_CONFIG.bricks.descentSpeed.toFixed(1)}`,
+    );
   }
 
   private syncBallVisuals(): void {

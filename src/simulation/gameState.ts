@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from './config';
+import { createBrickField, type BrickFieldState } from './brickField';
 
 export interface Vector2 { x: number; y: number }
 export interface PaddleState extends Vector2 { width: number; height: number }
@@ -9,43 +10,12 @@ export interface BallState extends Vector2 {
   historySampleTimer: number;
   radius: number;
 }
-export interface BrickState {
-  id: string;
-  column: number;
-  row: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  hp: number;
-}
 export interface GameState {
   paddle: PaddleState;
   balls: BallState[];
-  bricks: BrickState[];
+  brickField: BrickFieldState;
   lives: number;
   nextBallId: number;
-}
-
-function createTestBricks(): BrickState[] {
-  const config = GAME_CONFIG.bricks;
-  const bricks: BrickState[] = [];
-  for (let row = 0; row < config.rows; row += 1) {
-    for (let column = 0; column < config.columns; column += 1) {
-      if ((row === 0 && column === 0) || (row === 0 && column === config.columns - 1)) continue;
-      bricks.push({
-        id: `${column}:${row}`,
-        column,
-        row,
-        x: config.originX + column * (config.brickWidth + config.horizontalGap),
-        y: config.originY + row * (config.brickHeight + config.verticalGap),
-        width: config.brickWidth,
-        height: config.brickHeight,
-        hp: 1,
-      });
-    }
-  }
-  return bricks;
 }
 
 export function createInitialGameState(): GameState {
@@ -63,7 +33,7 @@ export function createInitialGameState(): GameState {
       historySampleTimer: 0,
       radius: ball.radius,
     }],
-    bricks: createTestBricks(),
+    brickField: createBrickField(),
     lives: GAME_CONFIG.run.startingLives,
     nextBallId: 2,
   };

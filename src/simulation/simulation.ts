@@ -1,10 +1,17 @@
 import { GAME_CONFIG } from './config';
-import type { BallState, BrickState, GameState } from './gameState';
+import { advanceBrickField, damageBrick, type BrickState } from './brickField';
+import type { BallState, GameState } from './gameState';
 
 export interface SimulationInput {
   movementAxis: number;
   mouseDisplacement: number;
   speedMultiplier: number;
+}
+
+export enum SimulationStepOutcome {
+  None,
+  FinalBallLost,
+  BrickOverflow,
 }
 
 export function getBallSpeed(ball: BallState): number {
@@ -88,13 +95,16 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
     setBallDirection(ball, hitOffset * GAME_CONFIG.ball.maxHorizontalRatio, true);
   }
 
-  for (let index = 0; index < state.bricks.length; index += 1) {
-    const brick = state.bricks[index];
-    if (!overlapsBrick(ball, brick)) continue;
-    collideWithBrick(ball, brick, previousX, previousY);
-    brick.hp -= 1;
-    if (brick.hp <= 0) state.bricks.splice(index, 1);
-    break;
+  let collided = false;
+  for (const row of state.brickField.rows) {
+    for (const brick of row.cells) {
+      if (!brick || !overlapsBrick(ball, brick)) continue;
+      collideWithBrick(ball, brick, previousX, previousY);
+      damageBrick(state.brickField, brick, 1);
+      collided = true;
+      break;
+    }
+    if (collided) break;
   }
   if (ball.y - ball.radius > field.bottom) {
     return true;
@@ -109,32 +119,15 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
   return false;
 }
 
-export function stepSimulation(state: GameState, input: SimulationInput, deltaSeconds: number): boolean {
+export function stepSimulation(
+  state: GameState,
+  input: SimulationInput,
+  deltaSeconds: number,
+): SimulationStepOutcome {
+  if (advanceBrickField(state.brickField, deltaSeconds)) return SimulationStepOutcome.BrickOverflow;
   updatePaddle(state, input, deltaSeconds);
   for (let index = state.balls.length - 1; index >= 0; index -= 1) {
     if (updateBall(state, state.balls[index], deltaSeconds)) state.balls.splice(index, 1);
   }
-  return state.balls.length === 0;
-}
-
-/** Temporary Commit 4 debug hook. Replace when real ball-spawning mechanics exist. */
-export function spawnDebugBall(state: GameState): void {
-  const source = state.balls[state.balls.length - 1];
-  if (!source) return;
-  const directionSign = state.nextBallId % 2 === 0 ? 1 : -1;
-  const offsetX = directionSign * (source.radius * 3);
-  const field = GAME_CONFIG.playfield;
-  const ball: BallState = {
-    id: state.nextBallId,
-    x: Math.min(field.right - source.radius, Math.max(field.left + source.radius, source.x + offsetX)),
-    y: Math.max(field.top + source.radius, source.y - source.radius * 2.5),
-    velocity: { x: source.velocity.x, y: source.velocity.y },
-    positionHistory: [],
-    historySampleTimer: 0,
-    radius: source.radius,
-  };
-  const sourceRatio = source.velocity.x / GAME_CONFIG.ball.speed;
-  setBallDirection(ball, sourceRatio + directionSign * 0.28, source.velocity.y < 0);
-  state.nextBallId += 1;
-  state.balls.push(ball);
+  return state.balls.length === 0 ? SimulationStepOutcome.FinalBallLost : SimulationStepOutcome.None;
 }
