@@ -33,7 +33,7 @@ export const GAME_CONFIG = {
     verticalGap: 7,
     originX: 74,
     fieldTopY: 32,
-    spawnIntervalSeconds: 9,
+    baseRowSpawnIntervalSeconds: 9,
     speedClassDistribution: [
       { speedClass: 'SLOW', weight: 60 },
       { speedClass: 'MEDIUM', weight: 25 },
@@ -45,13 +45,18 @@ export const GAME_CONFIG = {
     generationSeed: 0x5eed1234,
   },
   difficulty: {
-    currentLevel: 1,
     brickSpeedMilestones: [
       { level: 1, speeds: { SLOW: 3, MEDIUM: 4, FAST: 5, RUSH: 6 } },
       { level: 5, speeds: { SLOW: 3, MEDIUM: 4, FAST: 6, RUSH: 8 } },
       { level: 10, speeds: { SLOW: 5, MEDIUM: 7, FAST: 10, RUSH: 13 } },
       { level: 15, speeds: { SLOW: 8, MEDIUM: 11, FAST: 15, RUSH: 21 } },
     ],
+  },
+  progression: {
+    startingLevel: 1,
+    baseXpToNextLevel: 25,
+    normalBrickXp: 1,
+    levelUpNoticeSeconds: 1.4,
   },
   run: {
     startingLives: 3,

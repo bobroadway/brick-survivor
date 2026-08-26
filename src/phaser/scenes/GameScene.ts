@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { getActiveBrickCount, getBrickDescentSpeedRange } from '../../simulation/brickField';
+import { getActiveBrickCount } from '../../simulation/brickField';
 import { GAME_CONFIG } from '../../simulation/config';
+import { getBrickDescentSpeedRange } from '../../simulation/difficulty';
 import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
 import {
@@ -34,6 +35,10 @@ export class GameScene extends Phaser.Scene {
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
   private debugText?: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
+  private levelText!: Phaser.GameObjects.Text;
+  private xpText!: Phaser.GameObjects.Text;
+  private xpBarFill!: Phaser.GameObjects.Rectangle;
+  private levelUpText!: Phaser.GameObjects.Text;
   private pauseHintText!: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
   private statusShade!: Phaser.GameObjects.Rectangle;
@@ -50,7 +55,11 @@ export class GameScene extends Phaser.Scene {
   private lastDebugFps = -1;
   private lastDebugBallSpeed = -1;
   private lastDebugBrickCount = -1;
-  private escapeResumePending = false;
+  private lastDebugLevel = -1;
+  private lastHudLevel = -1;
+  private lastHudXp = -1;
+  private lastObservedLevel = 1;
+  private levelUpNoticeRemaining = 0;
 
   constructor() { super('GameScene'); }
 
@@ -63,7 +72,6 @@ export class GameScene extends Phaser.Scene {
       this,
       () => isSimulationRunning(this.session),
       (code) => this.handleShellKey(code),
-      (code) => this.handleShellKeyUp(code),
       () => this.pauseIfRunning(),
       () => this.handlePrimaryPointerDown(),
     );
@@ -75,6 +83,18 @@ export class GameScene extends Phaser.Scene {
     this.livesText = this.renderQuality.addText(52, 690, '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
     }).setDepth(10);
+    this.levelText = this.renderQuality.addText(155, 690, '', {
+      color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '14px', fontStyle: 'bold',
+    }).setDepth(10);
+    this.xpText = this.renderQuality.addText(245, 690, '', {
+      color: '#aeb8c8', fontFamily: 'Consolas, monospace', fontSize: '14px',
+    }).setDepth(10);
+    this.add.rectangle(365, 702, 92, 6, 0x273243).setOrigin(0, 0.5).setDepth(10);
+    this.xpBarFill = this.add.rectangle(365, 702, 92, 6, 0x78c6d0)
+      .setOrigin(0, 0.5).setDepth(11);
+    this.levelUpText = this.renderQuality.addText(GAME_CONFIG.width / 2, 260, '', {
+      color: '#e4c46c', fontFamily: 'Arial, sans-serif', fontSize: '38px', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(15).setVisible(false);
     this.pauseHintText = this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'ESC — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0).setDepth(10);
@@ -114,6 +134,8 @@ export class GameScene extends Phaser.Scene {
       this.removeDisplayModeListener?.();
     });
     this.updateLivesText();
+    this.lastObservedLevel = this.state.progression.level;
+    this.updateProgressionHud();
     this.applyPhasePresentation();
     this.drawGame();
     this.updateDebugText();
@@ -125,13 +147,19 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    this.accumulator += Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
+    const frameSeconds = Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
+    this.updateLevelUpNotice(frameSeconds);
+    this.accumulator += frameSeconds;
     const stepCount = Math.floor(this.accumulator / GAME_CONFIG.fixedStepSeconds);
     if (stepCount === 0) return;
     this.gameInput.readSimulationInput(this.simulationInput);
     this.simulationInput.mouseDisplacement /= stepCount;
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
       const outcome = stepSimulation(this.state, this.simulationInput, GAME_CONFIG.fixedStepSeconds);
+      if (this.state.progression.level > this.lastObservedLevel) {
+        this.showLevelUpNotice(this.state.progression.level);
+        this.lastObservedLevel = this.state.progression.level;
+      }
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
       if (outcome === SimulationStepOutcome.BrickOverflow) {
         enterGameOver(this.session);
@@ -144,14 +172,15 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.drawGame();
+    this.updateProgressionHud();
     this.updateDebugText();
   }
 
-  private applyPhasePresentation(requestPointerLock = true): void {
+  private applyPhasePresentation(): void {
     const running = isSimulationRunning(this.session);
     const menuMode = this.getMenuMode();
     this.accumulator = 0;
-    if (running) this.gameInput.enterRunning(requestPointerLock);
+    if (running) this.gameInput.enterRunning();
     else this.gameInput.enterPaused();
     this.pauseShade.setVisible(menuMode !== null);
     this.pauseHintText.setVisible(running);
@@ -167,12 +196,10 @@ export class GameScene extends Phaser.Scene {
   private pauseIfRunning(): void {
     if (!isSimulationRunning(this.session)) return;
     pauseManually(this.session);
-    this.escapeResumePending = false;
     this.applyPhasePresentation();
   }
 
   private resumeGame(): void {
-    this.escapeResumePending = false;
     resumeManualPause(this.session);
     this.applyPhasePresentation();
   }
@@ -188,6 +215,10 @@ export class GameScene extends Phaser.Scene {
     this.session = createSessionState();
     launchReadyBall(this.session);
     this.updateLivesText();
+    this.lastObservedLevel = this.state.progression.level;
+    this.levelUpNoticeRemaining = 0;
+    this.levelUpText.setVisible(false);
+    this.updateProgressionHud();
     this.applyPhasePresentation();
   }
 
@@ -222,24 +253,9 @@ export class GameScene extends Phaser.Scene {
       else this.navigatePauseMenu(code);
       return;
     }
-    if (code === 'Escape') this.resumeAfterEscapeKeyDown();
-    else if (code === 'Space' || code === 'Tab') this.resumeGame();
+    if (code === 'Space' || code === 'Tab') this.resumeGame();
     else if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
     else this.navigatePauseMenu(code);
-  }
-
-  private resumeAfterEscapeKeyDown(): void {
-    this.escapeResumePending = true;
-    resumeManualPause(this.session);
-    // Chromium finishes its native Pointer Lock escape handling on key-up. Resuming
-    // now but delaying only the lock request prevents that Escape from cancelling it.
-    this.applyPhasePresentation(false);
-  }
-
-  private handleShellKeyUp(code: string): void {
-    if (code !== 'Escape' || !this.escapeResumePending || this.session.phase !== GamePhase.Running) return;
-    this.escapeResumePending = false;
-    this.gameInput.restorePointerLock();
   }
 
   private handleConfirmationKey(code: string): void {
@@ -348,11 +364,13 @@ export class GameScene extends Phaser.Scene {
       fps === this.lastDebugFps
       && ballSpeed === this.lastDebugBallSpeed
       && brickCount === this.lastDebugBrickCount
+      && this.state.progression.level === this.lastDebugLevel
     ) return;
     this.lastDebugFps = fps;
     this.lastDebugBallSpeed = ballSpeed;
     this.lastDebugBrickCount = brickCount;
-    const speedRange = getBrickDescentSpeedRange(this.state.difficultyLevel);
+    this.lastDebugLevel = this.state.progression.level;
+    const speedRange = getBrickDescentSpeedRange(this.state.progression.level);
     this.debugText.setText(
       `FPS ${fps}  BALL ${ballSpeed} px/s\n`
       + `BRICKS ${brickCount}  SPEEDS ${speedRange.minimum}–${speedRange.maximum}`,
@@ -384,6 +402,28 @@ export class GameScene extends Phaser.Scene {
 
   private updateLivesText(): void {
     this.livesText.setText(`LIVES: ${this.state.lives}`);
+  }
+
+  private updateProgressionHud(): void {
+    const { level, currentXp, xpRequiredForNextLevel } = this.state.progression;
+    if (level === this.lastHudLevel && currentXp === this.lastHudXp) return;
+    this.lastHudLevel = level;
+    this.lastHudXp = currentXp;
+    this.levelText.setText(`LEVEL ${level}`);
+    this.xpText.setText(`XP ${currentXp} / ${xpRequiredForNextLevel}`);
+    this.xpBarFill.setScale(currentXp / xpRequiredForNextLevel, 1);
+  }
+
+  private showLevelUpNotice(level: number): void {
+    this.levelUpNoticeRemaining = GAME_CONFIG.progression.levelUpNoticeSeconds;
+    this.levelUpText.setText(`LEVEL ${level}`).setAlpha(1).setVisible(true);
+  }
+
+  private updateLevelUpNotice(deltaSeconds: number): void {
+    if (this.levelUpNoticeRemaining <= 0) return;
+    this.levelUpNoticeRemaining = Math.max(0, this.levelUpNoticeRemaining - deltaSeconds);
+    if (this.levelUpNoticeRemaining === 0) this.levelUpText.setVisible(false);
+    else this.levelUpText.setAlpha(Math.min(1, this.levelUpNoticeRemaining / 0.3));
   }
 
   private getStatusMessage(): string | null {

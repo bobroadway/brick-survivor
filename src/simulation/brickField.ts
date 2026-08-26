@@ -1,7 +1,7 @@
 import { GAME_CONFIG } from './config';
+import { getRowSpawnInterval, resolveBrickDescentSpeed, type BrickSpeedClass } from './difficulty';
 
 export type BrickKind = 'NORMAL';
-export type BrickSpeedClass = 'SLOW' | 'MEDIUM' | 'FAST' | 'RUSH';
 
 export interface BrickState {
   id: string;
@@ -13,6 +13,7 @@ export interface BrickState {
   height: number;
   speedClass: BrickSpeedClass;
   hp: number;
+  xpValue: number;
   kind: BrickKind;
   visualVariant: number;
 }
@@ -20,7 +21,7 @@ export interface BrickState {
 export interface BrickFieldState {
   /** Each column remains ordered from top to bottom. */
   columns: BrickState[][];
-  spawnTimerSeconds: number;
+  spawnCycleProgress: number;
   generatorState: number;
   speedClassGeneratorState: number;
   nextRowId: number;
@@ -48,29 +49,6 @@ function generateSpeedClass(field: BrickFieldState): BrickSpeedClass {
   return distribution[distribution.length - 1].speedClass;
 }
 
-export function resolveBrickDescentSpeed(speedClass: BrickSpeedClass, level: number): number {
-  const milestones = GAME_CONFIG.difficulty.brickSpeedMilestones;
-  const requestedLevel = Math.max(level, milestones[0].level);
-  const finalMilestone = milestones[milestones.length - 1];
-  if (requestedLevel >= finalMilestone.level) return finalMilestone.speeds[speedClass];
-
-  for (let index = 1; index < milestones.length; index += 1) {
-    const upper = milestones[index];
-    if (requestedLevel > upper.level) continue;
-    const lower = milestones[index - 1];
-    const progress = (requestedLevel - lower.level) / (upper.level - lower.level);
-    return lower.speeds[speedClass]
-      + (upper.speeds[speedClass] - lower.speeds[speedClass]) * progress;
-  }
-  return finalMilestone.speeds[speedClass];
-}
-
-export function getBrickDescentSpeedRange(level: number): { minimum: number; maximum: number } {
-  const speeds = GAME_CONFIG.bricks.speedClassDistribution
-    .map(({ speedClass }) => resolveBrickDescentSpeed(speedClass, level));
-  return { minimum: Math.min(...speeds), maximum: Math.max(...speeds) };
-}
-
 function generateFormation(field: BrickFieldState, y: number, insertAtTop: boolean): void {
   const config = GAME_CONFIG.bricks;
   const rowId = field.nextRowId;
@@ -85,16 +63,21 @@ function generateFormation(field: BrickFieldState, y: number, insertAtTop: boole
 
   for (let rank = 0; rank < targetCount; rank += 1) {
     const column = rankedColumns[rank].column;
+    const topBrick = field.columns[column][0];
+    const spawnY = insertAtTop && topBrick
+      ? Math.min(y, topBrick.y - config.verticalGap - config.brickHeight)
+      : y;
     const brick: BrickState = {
       id: `${rowId}:${column}`,
       rowId,
       column,
       x: config.originX + column * (config.brickWidth + config.horizontalGap),
-      y,
+      y: spawnY,
       width: config.brickWidth,
       height: config.brickHeight,
       speedClass: generateSpeedClass(field),
       hp: 1,
+      xpValue: GAME_CONFIG.progression.normalBrickXp,
       kind: 'NORMAL',
       visualVariant,
     };
@@ -115,7 +98,7 @@ export function createBrickField(): BrickFieldState {
   const seed = GAME_CONFIG.bricks.generationSeed >>> 0;
   const field: BrickFieldState = {
     columns: Array.from({ length: GAME_CONFIG.bricks.columns }, () => []),
-    spawnTimerSeconds: 0,
+    spawnCycleProgress: 0,
     generatorState: seed,
     speedClassGeneratorState: (seed ^ 0x9e3779b9) >>> 0,
     nextRowId: 1,
@@ -134,9 +117,9 @@ export function getBrickFailureBoundaryY(): number {
 export function advanceBrickField(
   field: BrickFieldState,
   deltaSeconds: number,
-  difficultyLevel: number = GAME_CONFIG.difficulty.currentLevel,
+  difficultyLevel: number = GAME_CONFIG.progression.startingLevel,
 ): boolean {
-  field.spawnTimerSeconds += deltaSeconds;
+  field.spawnCycleProgress += deltaSeconds / getRowSpawnInterval(difficultyLevel);
   const verticalGap = GAME_CONFIG.bricks.verticalGap;
 
   for (const column of field.columns) {
@@ -156,19 +139,21 @@ export function advanceBrickField(
     }
   }
 
-  while (field.spawnTimerSeconds >= GAME_CONFIG.bricks.spawnIntervalSeconds) {
-    field.spawnTimerSeconds -= GAME_CONFIG.bricks.spawnIntervalSeconds;
+  while (field.spawnCycleProgress >= 1) {
+    field.spawnCycleProgress -= 1;
     generateFormation(field, getBrickSpawnY(), true);
   }
   return false;
 }
 
-export function damageBrick(field: BrickFieldState, brick: BrickState, damage: number): void {
+export function damageBrick(field: BrickFieldState, brick: BrickState, damage: number): number {
   const column = field.columns[brick.column];
   const index = column.indexOf(brick);
-  if (index < 0) return;
+  if (index < 0) return 0;
   brick.hp -= damage;
-  if (brick.hp <= 0) column.splice(index, 1);
+  if (brick.hp > 0) return 0;
+  column.splice(index, 1);
+  return brick.xpValue;
 }
 
 export function getActiveBrickCount(field: BrickFieldState): number {

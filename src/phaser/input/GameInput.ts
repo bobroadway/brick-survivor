@@ -39,7 +39,6 @@ export class GameInput {
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
     this.heldMovementCodes.delete(event.code);
     this.heldShiftCodes.delete(event.code);
-    if (SHELL_CODES.has(event.code)) this.onShellKeyUp(event.code);
   };
 
   private readonly handleMouseMove = (event: MouseEvent): void => {
@@ -77,7 +76,6 @@ export class GameInput {
     private readonly scene: Phaser.Scene,
     private readonly isRunning: () => boolean,
     private readonly onShellKeyDown: (code: string) => void,
-    private readonly onShellKeyUp: (code: string) => void,
     private readonly onUnexpectedInputLoss: () => void,
     private readonly onPrimaryPointerDown: () => boolean,
   ) {
@@ -91,13 +89,9 @@ export class GameInput {
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
-  enterRunning(requestPointerLock = true): void {
+  enterRunning(): void {
     this.resetMovementInput();
-    if (requestPointerLock) this.requestPointerLock();
-  }
-
-  restorePointerLock(): void {
-    if (this.isRunning()) this.requestPointerLock();
+    this.requestPointerLock();
   }
 
   private requestPointerLock(): void {

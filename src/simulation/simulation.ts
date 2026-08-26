@@ -1,6 +1,7 @@
 import { GAME_CONFIG } from './config';
 import { advanceBrickField, damageBrick, type BrickState } from './brickField';
-import type { BallState, GameState } from './gameState';
+import { spawnLevelUpBalls, type BallState, type GameState } from './gameState';
+import { awardRunXp } from './progression';
 
 export interface SimulationInput {
   movementAxis: number;
@@ -100,7 +101,11 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
     for (const brick of column) {
       if (!overlapsBrick(ball, brick)) continue;
       collideWithBrick(ball, brick, previousX, previousY);
-      damageBrick(state.brickField, brick, 1);
+      const xpAwarded = damageBrick(state.brickField, brick, 1);
+      if (xpAwarded > 0) {
+        const rewards = awardRunXp(state.progression, xpAwarded);
+        for (const reward of rewards) spawnLevelUpBalls(state, reward.ballsGranted);
+      }
       collided = true;
       break;
     }
@@ -124,7 +129,7 @@ export function stepSimulation(
   input: SimulationInput,
   deltaSeconds: number,
 ): SimulationStepOutcome {
-  if (advanceBrickField(state.brickField, deltaSeconds, state.difficultyLevel)) {
+  if (advanceBrickField(state.brickField, deltaSeconds, state.progression.level)) {
     return SimulationStepOutcome.BrickOverflow;
   }
   updatePaddle(state, input, deltaSeconds);
