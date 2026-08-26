@@ -1,7 +1,10 @@
 import { GAME_CONFIG } from './config';
 import type { BallState, BrickState, GameState } from './gameState';
 
-export interface SimulationInput { horizontal: -1 | 0 | 1 }
+export interface SimulationInput {
+  horizontal: -1 | 0 | 1;
+  paddleTargetX: number | null;
+}
 
 export function getBallSpeed(ball: BallState): number {
   return Math.hypot(ball.velocity.x, ball.velocity.y);
@@ -25,7 +28,8 @@ function resetBallAbovePaddle(state: GameState): void {
 
 function updatePaddle(state: GameState, input: SimulationInput, deltaSeconds: number): void {
   const { paddle } = state;
-  paddle.x += input.horizontal * GAME_CONFIG.paddle.speed * deltaSeconds;
+  if (input.horizontal !== 0) paddle.x += input.horizontal * GAME_CONFIG.paddle.speed * deltaSeconds;
+  else if (input.paddleTargetX !== null) paddle.x = input.paddleTargetX;
   const minX = GAME_CONFIG.playfield.left + paddle.width / 2;
   const maxX = GAME_CONFIG.playfield.right - paddle.width / 2;
   paddle.x = Math.min(maxX, Math.max(minX, paddle.x));

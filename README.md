@@ -16,7 +16,7 @@ npm run dev
 
 Vite serves the renderer and Electron opens the game window. Changes to renderer code reload automatically; restart the command after changing Electron main-process code.
 
-Move the paddle with **A/D** or the **Left/Right Arrow** keys.
+Move the paddle with the mouse, **A/D**, or the **Left/Right Arrow** keys. Toggle pause with **Space**, **Escape**, **Enter**, or **Numpad Enter**; clicking pauses without toggling back.
 
 ## Checks and distribution build
 

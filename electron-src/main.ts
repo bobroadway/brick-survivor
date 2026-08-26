@@ -10,6 +10,8 @@ function createWindow(): void {
     height: 720,
     minWidth: 800,
     minHeight: 450,
+    resizable: true,
+    maximizable: true,
     backgroundColor: '#10131a',
     show: false,
     webPreferences: {

@@ -8,6 +8,14 @@ body,
   background: #10131a;
 }
 
+body {
+  cursor: none;
+}
+
+body.game-paused {
+  cursor: default;
+}
+
 canvas {
   display: block;
 }

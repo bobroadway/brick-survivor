@@ -2,46 +2,87 @@ import Phaser from 'phaser';
 import { GAME_CONFIG } from '../../simulation/config';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
 import { getBallSpeed, stepSimulation } from '../../simulation/simulation';
+import {
+  createSessionState,
+  isSimulationRunning,
+  pauseManually,
+  toggleManualPause,
+  type SessionState,
+} from '../../simulation/sessionState';
+import { GameInput } from '../input/GameInput';
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
+  private session!: SessionState;
+  private gameInput!: GameInput;
   private graphics!: Phaser.GameObjects.Graphics;
   private debugText?: Phaser.GameObjects.Text;
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private aKey!: Phaser.Input.Keyboard.Key;
-  private dKey!: Phaser.Input.Keyboard.Key;
+  private pauseShade!: Phaser.GameObjects.Rectangle;
+  private pauseText!: Phaser.GameObjects.Text;
   private accumulator = 0;
 
   constructor() { super('GameScene'); }
 
   create(): void {
     this.state = createInitialGameState();
+    this.session = createSessionState();
     this.graphics = this.add.graphics();
-    if (!this.input.keyboard) throw new Error('Keyboard input is unavailable');
-    this.cursors = this.input.keyboard.createCursorKeys();
-    this.aKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
-    this.dKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+    this.gameInput = new GameInput(
+      this,
+      () => {
+        toggleManualPause(this.session);
+        this.applyPausePresentation();
+      },
+      () => {
+        if (isSimulationRunning(this.session)) {
+          pauseManually(this.session);
+          this.applyPausePresentation();
+        }
+      },
+    );
     if (GAME_CONFIG.debug.enabled) {
       this.debugText = this.add.text(52, 46, '', {
         color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
       });
     }
+    this.add.text(GAME_CONFIG.width - 54, 48, 'SPACE — PAUSE', {
+      color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
+    }).setOrigin(1, 0);
+    this.pauseShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.58)
+      .setOrigin(0)
+      .setVisible(false);
+    this.pauseText = this.add.text(GAME_CONFIG.width / 2, GAME_CONFIG.height / 2, 'PAUSED', {
+      color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '54px', fontStyle: 'bold',
+    }).setOrigin(0.5).setVisible(false);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.gameInput.destroy());
+    this.applyPausePresentation();
     this.drawGame();
   }
 
   update(_time: number, deltaMilliseconds: number): void {
-    const leftHeld = this.cursors.left.isDown || this.aKey.isDown;
-    const rightHeld = this.cursors.right.isDown || this.dKey.isDown;
-    const horizontal: -1 | 0 | 1 = leftHeld === rightHeld ? 0 : leftHeld ? -1 : 1;
+    if (!isSimulationRunning(this.session)) {
+      this.accumulator = 0;
+      return;
+    }
+
     this.accumulator += Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
+    const simulationInput = this.gameInput.readSimulationInput();
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
-      stepSimulation(this.state, { horizontal }, GAME_CONFIG.fixedStepSeconds);
+      stepSimulation(this.state, simulationInput, GAME_CONFIG.fixedStepSeconds);
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
     }
     this.drawGame();
     this.debugText?.setText(
       `FPS ${this.game.loop.actualFps.toFixed(0)}  BALL ${getBallSpeed(this.state.ball).toFixed(0)} px/s`,
     );
+  }
+
+  private applyPausePresentation(): void {
+    const paused = !isSimulationRunning(this.session);
+    this.accumulator = 0;
+    this.pauseShade.setVisible(paused);
+    this.pauseText.setVisible(paused);
+    document.body.classList.toggle('game-paused', paused);
   }
 
   private drawGame(): void {
