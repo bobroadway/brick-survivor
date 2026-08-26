@@ -4,6 +4,8 @@ export interface Vector2 { x: number; y: number }
 export interface PaddleState extends Vector2 { width: number; height: number }
 export interface BallState extends Vector2 {
   velocity: Vector2;
+  positionHistory: Vector2[];
+  historySampleTimer: number;
   radius: number;
   active: boolean;
   resetTimer: number;
@@ -51,6 +53,8 @@ export function createInitialGameState(): GameState {
       x: paddleX,
       y: paddle.y - paddle.height / 2 - ball.spawnGap,
       velocity: { x: horizontalVelocity, y: -Math.sqrt(ball.speed ** 2 - horizontalVelocity ** 2) },
+      positionHistory: [],
+      historySampleTimer: 0,
       radius: ball.radius,
       active: true,
       resetTimer: 0,

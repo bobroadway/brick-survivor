@@ -2,7 +2,7 @@ import { GAME_CONFIG } from './config';
 import type { BallState, BrickState, GameState } from './gameState';
 
 export interface SimulationInput {
-  horizontal: -1 | 0 | 1;
+  movementAxis: number;
   paddleTargetX: number | null;
 }
 
@@ -23,13 +23,21 @@ function resetBallAbovePaddle(state: GameState): void {
   ball.x = paddle.x;
   ball.y = paddle.y - paddle.height / 2 - GAME_CONFIG.ball.spawnGap;
   ball.active = true;
+  ball.positionHistory.length = 0;
+  ball.historySampleTimer = 0;
   setBallDirection(ball, GAME_CONFIG.ball.initialHorizontalRatio * (ball.velocity.x < 0 ? -1 : 1), true);
 }
 
 function updatePaddle(state: GameState, input: SimulationInput, deltaSeconds: number): void {
   const { paddle } = state;
-  if (input.horizontal !== 0) paddle.x += input.horizontal * GAME_CONFIG.paddle.speed * deltaSeconds;
-  else if (input.paddleTargetX !== null) paddle.x = input.paddleTargetX;
+  const maxDistance = GAME_CONFIG.paddle.speed * deltaSeconds;
+  const movementAxis = Math.max(-1, Math.min(1, input.movementAxis));
+  if (movementAxis !== 0) {
+    paddle.x += movementAxis * maxDistance;
+  } else if (input.paddleTargetX !== null) {
+    const targetDelta = input.paddleTargetX - paddle.x;
+    paddle.x += Math.max(-maxDistance, Math.min(maxDistance, targetDelta));
+  }
   const minX = GAME_CONFIG.playfield.left + paddle.width / 2;
   const maxX = GAME_CONFIG.playfield.right - paddle.width / 2;
   paddle.x = Math.min(maxX, Math.max(minX, paddle.x));
@@ -105,6 +113,15 @@ function updateBall(state: GameState, deltaSeconds: number): void {
   if (ball.y - ball.radius > field.bottom) {
     ball.active = false;
     ball.resetTimer = GAME_CONFIG.ball.resetDelaySeconds;
+  }
+
+  if (ball.active) {
+    ball.historySampleTimer += deltaSeconds;
+    if (ball.historySampleTimer >= GAME_CONFIG.ball.trailSampleIntervalSeconds) {
+      ball.historySampleTimer %= GAME_CONFIG.ball.trailSampleIntervalSeconds;
+      ball.positionHistory.push({ x: ball.x, y: ball.y });
+      if (ball.positionHistory.length > GAME_CONFIG.ball.trailSampleCount) ball.positionHistory.shift();
+    }
   }
 }
 

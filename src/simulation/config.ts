@@ -5,6 +5,9 @@ export const GAME_CONFIG = {
   maxFrameSeconds: 0.1,
   playfield: { left: 40, right: 1240, top: 32, bottom: 720, wallThickness: 8 },
   paddle: { width: 150, height: 20, y: 650, speed: 720 },
+  input: {
+    mouseSensitivity: 1,
+  },
   ball: {
     radius: 9,
     speed: 440,
@@ -13,6 +16,8 @@ export const GAME_CONFIG = {
     initialHorizontalRatio: 0.34,
     minHorizontalRatio: 0.14,
     maxHorizontalRatio: 0.82,
+    trailSampleCount: 18,
+    trailSampleIntervalSeconds: 1 / 30,
   },
   bricks: {
     columns: 10,

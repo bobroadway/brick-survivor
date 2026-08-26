@@ -29,16 +29,14 @@ export class GameScene extends Phaser.Scene {
     this.graphics = this.add.graphics();
     this.gameInput = new GameInput(
       this,
+      () => this.state.paddle.x,
+      () => isSimulationRunning(this.session),
       () => {
         toggleManualPause(this.session);
         this.applyPausePresentation();
       },
-      () => {
-        if (isSimulationRunning(this.session)) {
-          pauseManually(this.session);
-          this.applyPausePresentation();
-        }
-      },
+      () => this.pauseIfRunning(),
+      () => this.pauseIfRunning(),
     );
     if (GAME_CONFIG.debug.enabled) {
       this.debugText = this.add.text(52, 46, '', {
@@ -80,9 +78,18 @@ export class GameScene extends Phaser.Scene {
   private applyPausePresentation(): void {
     const paused = !isSimulationRunning(this.session);
     this.accumulator = 0;
+    if (paused) this.gameInput.enterPaused();
+    else this.gameInput.enterRunning();
     this.pauseShade.setVisible(paused);
     this.pauseText.setVisible(paused);
     document.body.classList.toggle('game-paused', paused);
+    this.drawGame();
+  }
+
+  private pauseIfRunning(): void {
+    if (!isSimulationRunning(this.session)) return;
+    pauseManually(this.session);
+    this.applyPausePresentation();
   }
 
   private drawGame(): void {
@@ -104,6 +111,15 @@ export class GameScene extends Phaser.Scene {
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);
     const ball = this.state.ball;
+    if (!isSimulationRunning(this.session)) {
+      const historyLength = ball.positionHistory.length;
+      for (let index = 0; index < historyLength; index += 1) {
+        const point = ball.positionHistory[index];
+        const recency = (index + 1) / historyLength;
+        graphics.fillStyle(0xf0eee6, 0.05 + recency * 0.25);
+        graphics.fillCircle(point.x, point.y, ball.radius * (0.55 + recency * 0.25));
+      }
+    }
     if (ball.active) {
       graphics.fillStyle(0xf0eee6);
       graphics.fillCircle(ball.x, ball.y, ball.radius);
