@@ -109,21 +109,24 @@ export class GameInput {
     if (this.isRunning()) this.requestPointerLock();
   }
 
-  readSimulationInput(): SimulationInput {
-    const leftHeld = [...this.heldMovementCodes].some((code) => getMovementDirection(code) === -1);
-    const rightHeld = [...this.heldMovementCodes].some((code) => getMovementDirection(code) === 1);
+  readSimulationInput(output: SimulationInput): void {
+    let leftHeld = false;
+    let rightHeld = false;
+    for (const code of this.heldMovementCodes) {
+      const direction = getMovementDirection(code);
+      if (direction === -1) leftHeld = true;
+      else if (direction === 1) rightHeld = true;
+    }
     const movementAxis = leftHeld === rightHeld ? 0 : leftHeld ? -1 : 1;
     const mouseDisplacement = movementAxis === 0 ? this.pendingMouseDisplacement : 0;
     this.pendingMouseDisplacement = 0;
-    return {
-      movementAxis,
-      mouseDisplacement,
-      speedMultiplier: movementAxis === 0
+    output.movementAxis = movementAxis;
+    output.mouseDisplacement = mouseDisplacement;
+    output.speedMultiplier = movementAxis === 0
+      ? GAME_CONFIG.paddle.speedBoostMultiplier
+      : this.heldShiftCodes.size > 0
         ? GAME_CONFIG.paddle.speedBoostMultiplier
-        : this.heldShiftCodes.size > 0
-          ? GAME_CONFIG.paddle.speedBoostMultiplier
-          : 1,
-    };
+        : 1;
   }
 
   private resetMovementInput(): void {

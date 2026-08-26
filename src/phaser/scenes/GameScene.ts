@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../../simulation/config';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
-import { getBallSpeed, stepSimulation } from '../../simulation/simulation';
+import { getBallSpeed, stepSimulation, type SimulationInput } from '../../simulation/simulation';
 import {
   createSessionState,
   isSimulationRunning,
@@ -12,6 +12,8 @@ import {
 import { GameInput } from '../input/GameInput';
 import { RenderQualityManager } from '../rendering/RenderQualityManager';
 import { PauseMenu } from '../ui/PauseMenu';
+
+const BRICK_COLORS = [0x607d9d, 0x657c91, 0x6c738c, 0x756b83] as const;
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
@@ -25,6 +27,13 @@ export class GameScene extends Phaser.Scene {
   private removeDisplayModeListener?: () => void;
   private displayMode: DisplayMode = 'WINDOWED';
   private accumulator = 0;
+  private readonly simulationInput: SimulationInput = {
+    movementAxis: 0,
+    mouseDisplacement: 0,
+    speedMultiplier: 1,
+  };
+  private lastDebugFps = -1;
+  private lastDebugBallSpeed = -1;
 
   constructor() { super('GameScene'); }
 
@@ -84,20 +93,14 @@ export class GameScene extends Phaser.Scene {
     this.accumulator += Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
     const stepCount = Math.floor(this.accumulator / GAME_CONFIG.fixedStepSeconds);
     if (stepCount === 0) return;
-    const frameInput = this.gameInput.readSimulationInput();
-    const simulationInput = {
-      movementAxis: frameInput.movementAxis,
-      mouseDisplacement: frameInput.mouseDisplacement / stepCount,
-      speedMultiplier: frameInput.speedMultiplier,
-    };
+    this.gameInput.readSimulationInput(this.simulationInput);
+    this.simulationInput.mouseDisplacement /= stepCount;
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
-      stepSimulation(this.state, simulationInput, GAME_CONFIG.fixedStepSeconds);
+      stepSimulation(this.state, this.simulationInput, GAME_CONFIG.fixedStepSeconds);
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
     }
     this.drawGame();
-    this.debugText?.setText(
-      `FPS ${this.game.loop.actualFps.toFixed(0)}  BALL ${getBallSpeed(this.state.ball).toFixed(0)} px/s`,
-    );
+    this.updateDebugText();
   }
 
   private applyPausePresentation(): void {
@@ -193,9 +196,8 @@ export class GameScene extends Phaser.Scene {
     graphics.fillRect(field.right, field.top - wall, wall, field.bottom - field.top);
     graphics.fillRect(field.left - wall, field.top - wall, field.right - field.left + wall * 2, wall);
 
-    const colors = [0x607d9d, 0x657c91, 0x6c738c, 0x756b83];
     for (const brick of this.state.bricks) {
-      graphics.fillStyle(colors[brick.row % colors.length]);
+      graphics.fillStyle(BRICK_COLORS[brick.row % BRICK_COLORS.length]);
       graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
     }
 
@@ -216,5 +218,15 @@ export class GameScene extends Phaser.Scene {
       graphics.fillStyle(0xf0eee6);
       graphics.fillCircle(ball.x, ball.y, ball.radius);
     }
+  }
+
+  private updateDebugText(): void {
+    if (!this.debugText) return;
+    const fps = Math.round(this.game.loop.actualFps);
+    const ballSpeed = Math.round(getBallSpeed(this.state.ball));
+    if (fps === this.lastDebugFps && ballSpeed === this.lastDebugBallSpeed) return;
+    this.lastDebugFps = fps;
+    this.lastDebugBallSpeed = ballSpeed;
+    this.debugText.setText(`FPS ${fps}  BALL ${ballSpeed} px/s`);
   }
 }
