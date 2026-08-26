@@ -69,6 +69,7 @@ export class GameScene extends Phaser.Scene {
     const simulationInput = {
       movementAxis: frameInput.movementAxis,
       mouseDisplacement: frameInput.mouseDisplacement / stepCount,
+      speedMultiplier: frameInput.speedMultiplier,
     };
     while (this.accumulator >= GAME_CONFIG.fixedStepSeconds) {
       stepSimulation(this.state, simulationInput, GAME_CONFIG.fixedStepSeconds);

@@ -4,7 +4,13 @@ export const GAME_CONFIG = {
   fixedStepSeconds: 1 / 120,
   maxFrameSeconds: 0.1,
   playfield: { left: 40, right: 1240, top: 32, bottom: 720, wallThickness: 8 },
-  paddle: { width: 150, height: 20, y: 650, speed: 720 },
+  paddle: {
+    width: 150,
+    height: 20,
+    y: 650,
+    speed: 720,
+    speedBoostMultiplier: 2.5,
+  },
   input: {
     mouseSensitivity: 1,
   },

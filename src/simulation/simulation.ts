@@ -4,6 +4,7 @@ import type { BallState, BrickState, GameState } from './gameState';
 export interface SimulationInput {
   movementAxis: number;
   mouseDisplacement: number;
+  speedMultiplier: number;
 }
 
 export function getBallSpeed(ball: BallState): number {
@@ -30,7 +31,8 @@ function resetBallAbovePaddle(state: GameState): void {
 
 function updatePaddle(state: GameState, input: SimulationInput, deltaSeconds: number): void {
   const { paddle } = state;
-  const maxDistance = GAME_CONFIG.paddle.speed * deltaSeconds;
+  const speedMultiplier = Math.max(0, input.speedMultiplier);
+  const maxDistance = GAME_CONFIG.paddle.speed * speedMultiplier * deltaSeconds;
   const movementAxis = Math.max(-1, Math.min(1, input.movementAxis));
   if (movementAxis !== 0) {
     paddle.x += movementAxis * maxDistance;

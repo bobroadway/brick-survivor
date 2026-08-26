@@ -3,20 +3,37 @@ import { GAME_CONFIG } from '../../simulation/config';
 import type { SimulationInput } from '../../simulation/simulation';
 
 const PAUSE_CODES = new Set(['Space', 'Escape', 'Enter', 'NumpadEnter']);
+const LEFT_CODES = new Set(['KeyA', 'ArrowLeft']);
+const RIGHT_CODES = new Set(['KeyD', 'ArrowRight']);
+const SHIFT_CODES = new Set(['ShiftLeft', 'ShiftRight']);
+type MovementDirection = -1 | 1;
+
+function getMovementDirection(code: string): MovementDirection | null {
+  if (LEFT_CODES.has(code)) return -1;
+  if (RIGHT_CODES.has(code)) return 1;
+  return null;
+}
 
 export class GameInput {
-  private readonly cursors: Phaser.Types.Input.Keyboard.CursorKeys;
-  private readonly aKey: Phaser.Input.Keyboard.Key;
-  private readonly dKey: Phaser.Input.Keyboard.Key;
+  private readonly heldMovementCodes = new Set<string>();
+  private readonly heldShiftCodes = new Set<string>();
   private pendingMouseDisplacement = 0;
   private hadPointerLock = false;
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (!event.repeat && PAUSE_CODES.has(event.code)) this.onTogglePause();
-    if (this.isRunning() && ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
+    if (SHIFT_CODES.has(event.code)) this.heldShiftCodes.add(event.code);
+    const direction = getMovementDirection(event.code);
+    if (this.isRunning() && direction !== null) {
       this.requestPointerLock();
+      this.heldMovementCodes.add(event.code);
     }
     if (PAUSE_CODES.has(event.code) || event.code === 'ArrowLeft' || event.code === 'ArrowRight') event.preventDefault();
+  };
+
+  private readonly handleKeyUp = (event: KeyboardEvent): void => {
+    this.heldMovementCodes.delete(event.code);
+    this.heldShiftCodes.delete(event.code);
   };
 
   private readonly handleWindowPointerDown = (): void => {
@@ -56,10 +73,8 @@ export class GameInput {
     private readonly onUnexpectedInputLoss: () => void,
   ) {
     if (!scene.input.keyboard) throw new Error('Keyboard input is unavailable');
-    this.cursors = scene.input.keyboard.createCursorKeys();
-    this.aKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
-    this.dKey = scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
     window.addEventListener('keydown', this.handleKeyDown);
+    window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('pointerdown', this.handleWindowPointerDown);
     window.addEventListener('mousemove', this.handleMouseMove);
     window.addEventListener('blur', this.handleFocusLoss);
@@ -68,7 +83,7 @@ export class GameInput {
   }
 
   enterRunning(): void {
-    this.pendingMouseDisplacement = 0;
+    this.resetMovementInput();
     this.requestPointerLock();
   }
 
@@ -79,24 +94,36 @@ export class GameInput {
   }
 
   enterPaused(): void {
-    this.pendingMouseDisplacement = 0;
+    this.resetMovementInput();
     if (document.pointerLockElement) document.exitPointerLock();
   }
 
   readSimulationInput(): SimulationInput {
-    const leftHeld = this.cursors.left.isDown || this.aKey.isDown;
-    const rightHeld = this.cursors.right.isDown || this.dKey.isDown;
+    const leftHeld = [...this.heldMovementCodes].some((code) => getMovementDirection(code) === -1);
+    const rightHeld = [...this.heldMovementCodes].some((code) => getMovementDirection(code) === 1);
     const movementAxis = leftHeld === rightHeld ? 0 : leftHeld ? -1 : 1;
     const mouseDisplacement = movementAxis === 0 ? this.pendingMouseDisplacement : 0;
     this.pendingMouseDisplacement = 0;
     return {
       movementAxis,
       mouseDisplacement,
+      speedMultiplier: movementAxis === 0
+        ? GAME_CONFIG.paddle.speedBoostMultiplier
+        : this.heldShiftCodes.size > 0
+          ? GAME_CONFIG.paddle.speedBoostMultiplier
+          : 1,
     };
+  }
+
+  private resetMovementInput(): void {
+    this.heldMovementCodes.clear();
+    this.heldShiftCodes.clear();
+    this.pendingMouseDisplacement = 0;
   }
 
   destroy(): void {
     window.removeEventListener('keydown', this.handleKeyDown);
+    window.removeEventListener('keyup', this.handleKeyUp);
     window.removeEventListener('pointerdown', this.handleWindowPointerDown);
     window.removeEventListener('mousemove', this.handleMouseMove);
     window.removeEventListener('blur', this.handleFocusLoss);
