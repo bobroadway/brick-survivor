@@ -1,6 +1,6 @@
 # Brick Survivor
 
-Initial desktop project scaffold using TypeScript, Phaser, Vite, and Electron. Gameplay has not been implemented yet.
+An early playable desktop prototype using TypeScript, Phaser, Vite, and Electron.
 
 ## Requirements
 
@@ -15,6 +15,8 @@ npm run dev
 ```
 
 Vite serves the renderer and Electron opens the game window. Changes to renderer code reload automatically; restart the command after changing Electron main-process code.
+
+Move the paddle with **A/D** or the **Left/Right Arrow** keys.
 
 ## Checks and distribution build
 
