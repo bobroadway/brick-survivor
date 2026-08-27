@@ -1,11 +1,30 @@
+# Dependencies
 node_modules/
+
+# Build / packaging output
 dist/
 electron/
 release/
+
+# Logs
 *.log
+
+# OS-generated files
 .DS_Store
 Thumbs.db
+
+# IDE / editor metadata
 .idea/
 .vscode/
 !.vscode/extensions.json
 
+# Test output
+coverage/
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
