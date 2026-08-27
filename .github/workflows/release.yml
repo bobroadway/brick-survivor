@@ -1,0 +1,123 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      # Pull the exact commit referenced by the pushed tag.
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # Match the Node major version currently used for local development.
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      # Keep Git tags and package.json versions synchronized.
+      # Example:
+      #   tag:          v0.1.0
+      #   package.json: 0.1.0
+      - name: Verify tag matches package version
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $expectedTag = "$version"
+
+          Write-Host "Git tag:          $tag"
+          Write-Host "Package version:  $version"
+          Write-Host "Expected tag:     $expectedTag"
+
+          if ($tag -ne $expectedTag) {
+            throw "Release tag '$tag' does not match package.json version '$version'. Expected '$expectedTag'."
+          }
+
+      # npm ci uses package-lock.json and gives us a reproducible dependency install.
+      - name: Install dependencies
+        run: npm ci
+
+      # package.json build currently performs:
+      # - TypeScript typecheck
+      # - Vite renderer build
+      # - Electron TypeScript compilation
+      # - electron-builder Windows ZIP packaging
+      - name: Build Windows package
+        run: npm run build
+
+      # Normalize the public download filename instead of exposing
+      # electron-builder's internal naming convention.
+      - name: Prepare release asset
+        id: asset
+        shell: powershell
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+
+          $zips = @(Get-ChildItem `
+            -Path "release" `
+            -Filter "*.zip" `
+            -File)
+
+          if ($zips.Count -ne 1) {
+            throw "Expected exactly one ZIP in release/, but found $($zips.Count)."
+          }
+
+          $source = $zips[0].FullName
+          $assetName = "Brick-Survivor-v$version-Windows.zip"
+          $destination = Join-Path $PWD $assetName
+
+          Copy-Item $source $destination
+
+          Write-Host "electron-builder output: $source"
+          Write-Host "Release asset:           $destination"
+
+          "path=$destination" >> $env:GITHUB_OUTPUT
+          "name=$assetName" >> $env:GITHUB_OUTPUT
+
+      # GitHub-hosted Windows runners normally provide GitHub CLI.
+      # Install it only if the runner image does not have it.
+      - name: Ensure GitHub CLI is available
+        shell: powershell
+        run: |
+          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            choco install gh -y
+          }
+
+          gh --version
+
+      # Create the GitHub Release and attach the playable Windows ZIP.
+      # The rerun path also handles a release that was already created
+      # before a later step failed.
+      - name: Publish GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ASSET: ${{ steps.asset.outputs.path }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $title = "Brick Survivor $tag"
+
+          gh release view "$tag" *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists; replacing release asset."
+            gh release upload "$tag" "$env:RELEASE_ASSET" --clobber
+          }
+          else {
+            Write-Host "Creating release $tag."
+            gh release create "$tag" `
+              "$env:RELEASE_ASSET" `
+              --verify-tag `
+              --title "$title" `
+              --generate-notes
+          }
