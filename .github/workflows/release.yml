@@ -73,7 +73,7 @@ jobs:
           }
 
           $source = $zips[0].FullName
-          $assetName = "Brick-Survivor-v$version-Windows.zip"
+          $assetName = "Brick-Survivor-$version-Windows.zip"
           $destination = Join-Path $PWD $assetName
 
           Copy-Item $source $destination
@@ -107,17 +107,28 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $title = "Brick Survivor $tag"
 
-          gh release view "$tag" *> $null
+          $releases = gh release list --limit 100 --json tagName | ConvertFrom-Json
+          $releaseExists = $null -ne ($releases | Where-Object { $_.tagName -eq $tag })
 
-          if ($LASTEXITCODE -eq 0) {
+          if ($releaseExists) {
             Write-Host "Release $tag already exists; replacing release asset."
+
             gh release upload "$tag" "$env:RELEASE_ASSET" --clobber
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload release asset."
+            }
           }
           else {
             Write-Host "Creating release $tag."
+
             gh release create "$tag" `
               "$env:RELEASE_ASSET" `
               --verify-tag `
               --title "$title" `
               --generate-notes
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create GitHub release."
+            }
           }
