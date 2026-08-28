@@ -65,6 +65,229 @@ function testElectricRanking(): void {
   assert(rankElectricTargets(source, [upwardTwo])[0].brick.id === 'upward-two', 'same-column upward target must remain valid');
 }
 
+function runSecondaryElectricTargetingScenario(candidates: BrickState[]): string | undefined {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  const primary = makeBrick('primary-origin', 600, 300, 2);
+  addBrick(state, primary);
+  for (const candidate of candidates) addBrick(state, candidate);
+  state.electricProcs.push({
+    id: 1,
+    primaryTargetIds: new Set([primary.id]),
+    secondaryTargetIds: new Set(),
+    activeProjectileCount: 1,
+  });
+  state.nextElectricProcId = 2;
+  state.projectiles.push({
+    id: state.nextProjectileId++,
+    kind: 'ELECTRIC',
+    x: primary.x + primary.width / 2,
+    y: primary.y + primary.height / 2,
+    velocity: { x: 0, y: 0 },
+    damage: 1,
+    targetBrickId: primary.id,
+    electricProcId: 1,
+    electricGeneration: 'PRIMARY',
+  });
+  const ball = state.balls[0];
+  ball.x = 1000; ball.y = 600; ball.velocity.x = 0; ball.velocity.y = 0;
+  stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 1 / 120, 1 / 120);
+  return state.projectiles.find(({ electricGeneration }) => electricGeneration === 'SECONDARY')?.targetBrickId;
+}
+
+function testSecondaryElectricUsesSharedScoring(): void {
+  const lateralThree = makeBrick('secondary-lateral-three', 600 + 3 * 60, 300);
+  const upwardFour = makeBrick('secondary-upward-four', 600, 300 - 4 * 24);
+  assert(
+    runSecondaryElectricTargetingScenario([upwardFour, lateralThree]) === lateralThree.id,
+    'secondary Electric did not prefer three lateral tiles over four same-column upward tiles',
+  );
+
+  const slightlyHigher = makeBrick('secondary-higher', 600 + 2 * 60, 276);
+  const slightlyLower = makeBrick('secondary-lower', 600 + 2 * 60, 324);
+  assert(
+    runSecondaryElectricTargetingScenario([slightlyHigher, slightlyLower]) === slightlyLower.id,
+    'secondary Electric did not apply the shared lower-target preference',
+  );
+
+  const onlyUpward = makeBrick('secondary-only-upward', 600, 252);
+  assert(
+    runSecondaryElectricTargetingScenario([onlyUpward]) === onlyUpward.id,
+    'secondary Electric treated the upward penalty as a hard exclusion',
+  );
+}
+
+function createElectricProcScenario(level: number) {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  addBrick(state, makeBrick('electric-source', 602, 500));
+  for (const [index, x] of [422, 482, 542, 662, 722, 782].entries()) {
+    addBrick(state, makeBrick(`primary-${index}`, x, 500, 2));
+  }
+  state.powers.levels.ELECTRIC_BALL = level;
+  const ball = state.balls[0];
+  ball.x = 630; ball.y = 535; ball.velocity.x = 0; ball.velocity.y = -240;
+  stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
+  ball.x = 1000; ball.y = 600; ball.velocity.x = 0; ball.velocity.y = 0;
+  return state;
+}
+
+function addElectricSecondaryCandidates(state: ReturnType<typeof createInitialGameState>, count: number): void {
+  for (const [index, x] of [422, 482, 542, 662, 722, 782].slice(0, count).entries()) {
+    addBrick(state, makeBrick(`secondary-${index}`, x, 404, 10));
+  }
+}
+
+function advanceElectricScenario(
+  state: ReturnType<typeof createInitialGameState>,
+  maximumSteps = 240,
+  onSecondary?: (targetId: string) => void,
+): Set<string> {
+  const seenProjectileIds = new Set<number>();
+  const secondaryTargets = new Set<string>();
+  for (let step = 0; step < maximumSteps; step += 1) {
+    for (const projectile of state.projectiles) {
+      if (projectile.electricGeneration !== 'SECONDARY' || seenProjectileIds.has(projectile.id)) continue;
+      seenProjectileIds.add(projectile.id);
+      assert(projectile.targetBrickId, 'secondary Electric projectile has no target');
+      secondaryTargets.add(projectile.targetBrickId);
+      onSecondary?.(projectile.targetBrickId);
+    }
+    if (state.electricProcs.length === 0 && !state.projectiles.some(({ kind }) => kind === 'ELECTRIC')) break;
+    stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 1 / 120, 1 / 120);
+  }
+  return secondaryTargets;
+}
+
+function testElectricPrimaryProgressionAndChains(): void {
+  const expectedPrimaryCounts = [3, 4, 5, 6, 6];
+  for (let level = 1; level <= 5; level += 1) {
+    const state = createElectricProcScenario(level);
+    const primaries = state.projectiles.filter(({ kind }) => kind === 'ELECTRIC');
+    assert(primaries.length === expectedPrimaryCounts[level - 1], `Electric Lv${level} primary count mismatch`);
+    assert(new Set(primaries.map(({ targetBrickId }) => targetBrickId)).size === primaries.length, `Electric Lv${level} duplicated a primary target`);
+    addElectricSecondaryCandidates(state, 6);
+    const secondaryTargets = advanceElectricScenario(state);
+    if (level < 5) {
+      assert(secondaryTargets.size === 0, `Electric Lv${level} incorrectly chained`);
+    } else {
+      assert(
+        secondaryTargets.size === 6,
+        `Electric Lv5 did not reserve six unique secondary targets: ${[...secondaryTargets].join(',')}`,
+      );
+      assert(
+        [...secondaryTargets].every((id) => id.startsWith('secondary-')),
+        'Electric Lv5 selected a primary target as a secondary target',
+      );
+      assert(state.electricProcs.length === 0, 'completed Electric proc state was not cleaned up');
+    }
+  }
+}
+
+function testElectricLimitedAndDeadSecondaryTargets(): void {
+  const limited = createElectricProcScenario(5);
+  addElectricSecondaryCandidates(limited, 2);
+  const limitedTargets = advanceElectricScenario(limited);
+  assert(limitedTargets.size === 2, 'Electric Lv5 relaxed uniqueness when only two secondary targets existed');
+
+  const interrupted = createElectricProcScenario(5);
+  addElectricSecondaryCandidates(interrupted, 6);
+  let destroyedTargetId: string | undefined;
+  const targetHistory: string[] = [];
+  advanceElectricScenario(interrupted, 240, (targetId) => {
+    targetHistory.push(targetId);
+    if (destroyedTargetId) return;
+    destroyedTargetId = targetId;
+    const target = interrupted.brickField.columns.flat().find(({ id }) => id === targetId);
+    if (target) applyBrickDamage(interrupted, target, target.hp, 'GUN');
+  });
+  assert(destroyedTargetId !== undefined, 'dead-target Electric scenario never created a secondary');
+  assert(targetHistory.filter((id) => id === destroyedTargetId).length === 1, 'dead reserved secondary target was reused');
+  assert(new Set(targetHistory).size === targetHistory.length, 'asynchronous secondary reservations duplicated a target');
+  assert(targetHistory.length <= 6, 'secondary Electric hits created a tertiary chain');
+}
+
+function createDirectionalProcScenario(power: 'FIRE_BALL' | 'WIND_BALL', level: number) {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  addBrick(state, makeBrick('entry-blocker', 42, 8));
+  addBrick(state, makeBrick('source', 602, 400));
+  state.powers.levels[power] = level;
+  const ball = state.balls[0];
+  ball.x = 630; ball.y = 435; ball.velocity.x = 0; ball.velocity.y = -240;
+  return { state, ball };
+}
+
+function testFireWidthsAndVisuals(): void {
+  const radiusSpaces = [2, 3, 4, 5];
+  for (let level = 1; level <= 5; level += 1) {
+    const { state } = createDirectionalProcScenario('FIRE_BALL', level);
+    for (let space = -9; space <= 9; space += 1) {
+      if (space !== 0) addBrick(state, makeBrick(`fire-${space}`, 602 + space * 60, 400));
+    }
+    stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
+    const survivingSpaces = state.brickField.columns.flat()
+      .filter(({ id }) => id.startsWith('fire-'))
+      .map(({ id }) => Number(id.slice(5)));
+    const radius = level === 5 ? 9 : radiusSpaces[level - 1];
+    for (let space = -9; space <= 9; space += 1) {
+      if (space === 0) continue;
+      assert(survivingSpaces.includes(space) === (Math.abs(space) > radius), `Fire Lv${level} range mismatch at space ${space}`);
+    }
+    const effect = state.fireEffects[0];
+    assert(effect, `Fire Lv${level} visual missing`);
+    const expectedX1 = level === 5 ? GAME_CONFIG.playfield.left : 630 - radius * 60;
+    const expectedX2 = level === 5 ? GAME_CONFIG.playfield.right : 630 + radius * 60;
+    assertNear(effect.x1, expectedX1, `Fire Lv${level} visual left edge`);
+    assertNear(effect.x2, expectedX2, `Fire Lv${level} visual right edge`);
+  }
+
+  for (const [sourceX, expectedEdge, edgeKey] of [
+    [42, GAME_CONFIG.playfield.left, 'x1'],
+    [1182, GAME_CONFIG.playfield.right, 'x2'],
+  ] as const) {
+    const state = createInitialGameState();
+    state.brickField.columns.forEach((column) => column.splice(0));
+    addBrick(state, makeBrick('entry-blocker', 42, 8));
+    addBrick(state, makeBrick('edge-source', sourceX, 400));
+    state.powers.levels.FIRE_BALL = 1;
+    const ball = state.balls[0];
+    ball.x = sourceX + 28; ball.y = 435; ball.velocity.x = 0; ball.velocity.y = -240;
+    stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
+    assertNear(state.fireEffects[0][edgeKey], expectedEdge, `Fire visual did not clip at ${edgeKey} boundary`);
+  }
+}
+
+function testWindRangesAndVisuals(): void {
+  for (let level = 1; level <= 5; level += 1) {
+    const { state } = createDirectionalProcScenario('WIND_BALL', level);
+    for (let space = 1; space <= 8; space += 1) {
+      addBrick(state, makeBrick(`wind-space-${space}`, 602, 400 - space * 24));
+    }
+    stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
+    const survivingSpaces = state.brickField.columns.flat()
+      .filter(({ id }) => id.startsWith('wind-space-'))
+      .map(({ id }) => Number(id.slice('wind-space-'.length)));
+    const range = level === 5 ? 8 : GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1];
+    for (let space = 1; space <= 8; space += 1) {
+      assert(survivingSpaces.includes(space) === (space > range), `Wind Lv${level} range mismatch at space ${space}`);
+    }
+    const effect = state.windEffects[0];
+    assert(effect, `Wind Lv${level} visual missing`);
+    assertNear(
+      effect.y1,
+      level === 5 ? GAME_CONFIG.playfield.top : effect.y2 - range * 24,
+      `Wind Lv${level} visual top`,
+    );
+  }
+  assert(getPowerDescription('FIRE_BALL', 1, false).includes('5-brick-wide'), 'Fire Lv1 description stale');
+  assert(getPowerDescription('FIRE_BALL', 4, false).includes('11-brick-wide'), 'Fire Lv4 description stale');
+  assert(getPowerDescription('WIND_BALL', 1, false).includes('4 spaces'), 'Wind Lv1 description stale');
+  assert(getPowerDescription('ELECTRIC_BALL', 5, false).includes('chaining once'), 'Electric Lv5 description stale');
+}
+
 function testWindRanking(): void {
   const source: BrickDestruction = { source: 'BALL', x: 300, y: 300, width: 56, height: 20 };
   const nearest = makeBrick('nearest', 305, 250);
@@ -227,7 +450,7 @@ function testPiercedBallKillProcs(): void {
     addBrick(state, makeBrick(`wind-${kill}`, 500, 260));
     ball.x = 520; ball.y = 280; ball.velocity.x = 0; ball.velocity.y = 240;
     stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
-    assert(state.projectiles.length === 1, `pierced kill ${kill + 1} missed Electric`);
+    assert(state.projectiles.some(({ kind }) => kind === 'ELECTRIC'), `pierced kill ${kill + 1} missed Electric`);
     assert(state.fireEffects.length === 1, `pierced kill ${kill + 1} missed Fire`);
     assert(state.windEffects.length === 1, `pierced kill ${kill + 1} missed Wind`);
   }
@@ -352,7 +575,7 @@ function testWindLevelsAndNoRecursion(): void {
     addBrick(state, makeBrick('below', 500, 450));
     const destruction = applyBrickDamage(state, source, 1, 'BALL');
     assert(isBallKill(destruction), 'test source was not a BALL kill');
-    const expectedCount = level === 5 ? 7 : level + 1;
+    const expectedCount = level === 5 ? 7 : level + 3;
     const targets = selectWindTargets(level, destruction, state.brickField.columns.flat());
     assert(targets.length === expectedCount, `Wind Lv${level} target count mismatch`);
     const xpBefore = state.progression.currentXp;
@@ -362,15 +585,15 @@ function testWindLevelsAndNoRecursion(): void {
   }
 
   const source: BrickDestruction = { source: 'BALL', x: 500, y: 400, width: 56, height: 20 };
-  const inSecondSpace = makeBrick('space-2', 500, 352);
-  const beyondSecondSpace = makeBrick('space-3', 500, 328);
+  const inFourthSpace = makeBrick('space-4', 500, 304);
+  const beyondFourthSpace = makeBrick('space-5', 500, 280);
   assert(
-    selectWindTargets(1, source, [beyondSecondSpace]).length === 0,
-    'Wind Lv1 searched beyond its two-space range to fill a target quota',
+    selectWindTargets(1, source, [beyondFourthSpace]).length === 0,
+    'Wind Lv1 searched beyond its four-space range',
   );
   assert(
-    selectWindTargets(1, source, [inSecondSpace, beyondSecondSpace]).map(({ id }) => id).join(',') === 'space-2',
-    'Wind Lv1 must hit a brick in space 2 without reaching space 3',
+    selectWindTargets(1, source, [inFourthSpace, beyondFourthSpace]).map(({ id }) => id).join(',') === 'space-4',
+    'Wind Lv1 must hit a brick in space 4 without reaching space 5',
   );
 }
 
@@ -586,6 +809,11 @@ function testMissileDamageAndNoTargetExpiry(): void {
 
 testBallKillCategory();
 testElectricRanking();
+testSecondaryElectricUsesSharedScoring();
+testElectricPrimaryProgressionAndChains();
+testElectricLimitedAndDeadSecondaryTargets();
+testFireWidthsAndVisuals();
+testWindRangesAndVisuals();
 testWindRanking();
 testSpeeds();
 testOffersAndMaxPairs();

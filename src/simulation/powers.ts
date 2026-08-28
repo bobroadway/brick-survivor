@@ -57,26 +57,21 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
   },
   {
     id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => level === 1
-      ? 'Destroyed bricks zap the nearest brick within range.'
-      : `Destroyed bricks zap up to ${level} nearby bricks.`,
+    describeCurrent: (level) => level === 5
+      ? 'Zaps 6 nearby bricks, with each zap chaining once.'
+      : `Zaps ${GAME_CONFIG.powers.electricPrimaryTargetsByLevel[level - 1]} nearby bricks.`,
   },
   {
     id: 'FIRE_BALL', name: 'FIRE BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => [
-      '',
-      'Destroyed bricks blast nearby bricks to the left and right.',
-      'Horizontal blast range increases.',
-      'Horizontal blast range increases further.',
-      'Horizontal blast range becomes very large.',
-      'Destroyed bricks blast the entire horizontal line.',
-    ][level],
+    describeCurrent: (level) => level === 5
+      ? 'Blasts the entire horizontal row.'
+      : `Blasts a ${GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] * 2 + 1}-brick-wide horizontal area.`,
   },
   {
     id: 'WIND_BALL', name: 'WIND BALL', enabledInOfferPool: true,
     describeCurrent: (level) => level === 5
-      ? 'Destroyed bricks blast every brick above.'
-      : `Destroyed bricks blast ${level + 1} brick spaces above.`,
+      ? 'Strikes the entire column above.'
+      : `Strikes up to ${GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1]} spaces above.`,
   },
   {
     id: 'HOMING_MISSILE', name: 'HOMING MISSILE', enabledInOfferPool: true,

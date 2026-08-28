@@ -32,6 +32,14 @@ export interface ProjectileState extends Vector2 {
   missilePhase?: 'DEPLOYING' | 'SEARCHING' | 'HOMING';
   deploymentRemainingSeconds?: number;
   homingSpeed?: number;
+  electricProcId?: number;
+  electricGeneration?: 'PRIMARY' | 'SECONDARY';
+}
+export interface ElectricProcState {
+  id: number;
+  primaryTargetIds: Set<string>;
+  secondaryTargetIds: Set<string>;
+  activeProjectileCount: number;
 }
 export interface FireEffectState { x1: number; x2: number; y: number; remainingSeconds: number }
 export interface WindEffectState { x: number; y1: number; y2: number; remainingSeconds: number }
@@ -47,6 +55,8 @@ export interface GameState {
   fireEffects: FireEffectState[];
   windEffects: WindEffectState[];
   nextProjectileId: number;
+  electricProcs: ElectricProcState[];
+  nextElectricProcId: number;
   brickPressureAssist: BrickPressureAssistState;
 }
 
@@ -79,6 +89,8 @@ export function createInitialGameState(): GameState {
     fireEffects: [],
     windEffects: [],
     nextProjectileId: 1,
+    electricProcs: [],
+    nextElectricProcId: 1,
     brickPressureAssist: createBrickPressureAssistState(),
   };
 }

@@ -118,10 +118,22 @@ function triggerElectric(state: GameState, destruction: BrickDestruction): void 
   const sourceY = destruction.y + destruction.height / 2;
   const bricks: BrickState[] = [];
   for (const column of state.brickField.columns) bricks.push(...column);
-  for (const { brick } of rankElectricTargets(destruction, bricks).slice(0, level)) {
+  const targetCount = GAME_CONFIG.powers.electricPrimaryTargetsByLevel[level - 1];
+  const targets = rankElectricTargets(destruction, bricks).slice(0, targetCount).map(({ brick }) => brick);
+  const proc = level === GAME_CONFIG.powers.maxLevel && targets.length > 0
+    ? {
+      id: state.nextElectricProcId++,
+      primaryTargetIds: new Set(targets.map(({ id }) => id)),
+      secondaryTargetIds: new Set<string>(),
+      activeProjectileCount: targets.length,
+    }
+    : undefined;
+  if (proc) state.electricProcs.push(proc);
+  for (const brick of targets) {
     state.projectiles.push({
       id: state.nextProjectileId++, kind: 'ELECTRIC', x: sourceX, y: sourceY,
       velocity: { x: 0, y: 0 }, damage: 1, targetBrickId: brick.id,
+      electricProcId: proc?.id, electricGeneration: proc ? 'PRIMARY' : undefined,
     });
   }
 }
@@ -135,7 +147,8 @@ function triggerWind(state: GameState, destruction: BrickDestruction): void {
   const sourceCenterX = destruction.x + destruction.width / 2;
   const sourceCenterY = destruction.y + destruction.height / 2;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
-  const range = (level + 1) * verticalPitch;
+  const rangeSpaces = GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
+  const range = rangeSpaces * verticalPitch;
   state.windEffects.push({
     x: sourceCenterX,
     y1: level === GAME_CONFIG.powers.maxLevel
@@ -153,7 +166,8 @@ function triggerFire(state: GameState, destruction: BrickDestruction): void {
   const sourceCenterX = destruction.x + destruction.width / 2;
   const sourceCenterY = destruction.y + destruction.height / 2;
   const fullLine = level === 5;
-  const radius = (GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap) * level;
+  const radiusSpaces = GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] ?? 0;
+  const radius = (GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap) * radiusSpaces;
   const targets: BrickState[] = [];
   for (const column of state.brickField.columns) {
     for (const brick of column) {
@@ -257,6 +271,52 @@ function updateSplitting(state: GameState, deltaSeconds: number): void {
     for (const ball of state.balls) if (ball.id < oldest.id) oldest = ball;
     spawnSplitBalls(state, oldest, level);
   }
+}
+
+function findElectricProc(state: GameState, id: number | undefined) {
+  return id === undefined ? undefined : state.electricProcs.find((proc) => proc.id === id);
+}
+
+function finishElectricProjectile(state: GameState, procId: number | undefined): void {
+  const procIndex = procId === undefined
+    ? -1
+    : state.electricProcs.findIndex((candidate) => candidate.id === procId);
+  if (procIndex < 0) return;
+  const proc = state.electricProcs[procIndex];
+  proc.activeProjectileCount -= 1;
+  if (proc.activeProjectileCount <= 0) state.electricProcs.splice(procIndex, 1);
+}
+
+function launchSecondaryElectric(
+  state: GameState,
+  procId: number | undefined,
+  origin: { x: number; y: number; width: number; height: number },
+): void {
+  const proc = findElectricProc(state, procId);
+  if (!proc) return;
+  const candidates: BrickState[] = [];
+  for (const column of state.brickField.columns) candidates.push(...column);
+  const excludedTargetIds = new Set(proc.primaryTargetIds);
+  for (const id of proc.secondaryTargetIds) excludedTargetIds.add(id);
+  const target = rankElectricTargets(
+    { source: 'ELECTRIC', ...origin },
+    candidates,
+    excludedTargetIds,
+  )[0]?.brick;
+  if (!target) return;
+  proc.secondaryTargetIds.add(target.id);
+  proc.activeProjectileCount += 1;
+  state.projectiles.push({
+    id: state.nextProjectileId++,
+    kind: 'ELECTRIC',
+    x: origin.x + origin.width / 2,
+    y: origin.y + origin.height / 2,
+    velocity: { x: 0, y: 0 },
+    damage: 1,
+    targetBrickId: target.id,
+    electricProcId: proc.id,
+    electricGeneration: 'SECONDARY',
+  });
 }
 
 function findSweptProjectileHit(
@@ -377,7 +437,11 @@ function updateProjectiles(state: GameState, deltaSeconds: number): void {
     }
     if (projectile.kind === 'ELECTRIC') {
       const target = projectile.targetBrickId ? findBrickById(state, projectile.targetBrickId) : undefined;
-      if (!target) { state.projectiles.splice(index, 1); continue; }
+      if (!target) {
+        finishElectricProjectile(state, projectile.electricProcId);
+        state.projectiles.splice(index, 1);
+        continue;
+      }
       const targetX = target.x + target.width / 2;
       const targetY = target.y + target.height / 2;
       const dx = targetX - projectile.x;
@@ -385,7 +449,12 @@ function updateProjectiles(state: GameState, deltaSeconds: number): void {
       const distance = Math.hypot(dx, dy);
       const travel = GAME_CONFIG.powers.projectileSpeed * deltaSeconds;
       if (distance <= travel) {
+        const impactOrigin = { x: target.x, y: target.y, width: target.width, height: target.height };
         applyBrickDamage(state, target, projectile.damage, 'ELECTRIC');
+        if (projectile.electricGeneration === 'PRIMARY') {
+          launchSecondaryElectric(state, projectile.electricProcId, impactOrigin);
+        }
+        finishElectricProjectile(state, projectile.electricProcId);
         state.projectiles.splice(index, 1);
       } else {
         projectile.velocity.x = dx / distance * GAME_CONFIG.powers.projectileSpeed;

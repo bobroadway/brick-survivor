@@ -19,6 +19,7 @@ export interface ElectricTargetScore {
 export function rankElectricTargets(
   source: BrickDestruction,
   bricks: readonly BrickState[],
+  excludedBrickIds?: ReadonlySet<string>,
 ): ElectricTargetScore[] {
   const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
@@ -26,6 +27,7 @@ export function rankElectricTargets(
   const sourceCenterY = getCenterY(source);
   const candidates: ElectricTargetScore[] = [];
   for (const brick of bricks) {
+    if (excludedBrickIds?.has(brick.id)) continue;
     const columnDistance = Math.abs(getCenterX(brick) - sourceCenterX) / horizontalPitch;
     const rowDistance = Math.abs(getCenterY(brick) - sourceCenterY) / verticalPitch;
     const tileDistance = columnDistance + rowDistance;
@@ -73,7 +75,8 @@ export function selectWindTargets(
   const eligible = rankWindTargets(source, bricks);
   if (level >= GAME_CONFIG.powers.maxLevel) return eligible;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
-  const range = Math.max(0, level + 1) * verticalPitch;
+  const rangeSpaces = GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
+  const range = rangeSpaces * verticalPitch;
   const sourceCenterY = getCenterY(source);
   return eligible.filter((brick) => sourceCenterY - getCenterY(brick) <= range);
 }
