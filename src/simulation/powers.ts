@@ -46,32 +46,32 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
   },
   {
     id: 'SPLITTING_BALL', name: 'SPLITTING BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => `Creates ${level} additional ball${level === 1 ? '' : 's'} every ${GAME_CONFIG.powers.splittingIntervalSeconds} seconds.`,
+    describeCurrent: (level) => `Splits a ball every ${GAME_CONFIG.powers.splittingCooldownSecondsByLevel[level - 1]} seconds.`,
     describeSelection: (level) => level === 1
-      ? `Immediately creates 1 additional ball, then creates another every ${GAME_CONFIG.powers.splittingIntervalSeconds} seconds.`
-      : `Creates ${level} additional balls every ${GAME_CONFIG.powers.splittingIntervalSeconds} seconds.`,
+      ? `Immediately splits once, then every ${GAME_CONFIG.powers.splittingCooldownSecondsByLevel[0]} seconds.`
+      : `Splits a ball every ${GAME_CONFIG.powers.splittingCooldownSecondsByLevel[level - 1]} seconds.`,
   },
   {
-    id: 'PADDLE_SIZE', name: 'PADDLE SIZE', enabledInOfferPool: false,
-    describeCurrent: (level) => level === 5 ? 'Doubles paddle width.' : `Increases paddle width by ${level * 20}%.`,
+    id: 'PADDLE_SIZE', name: 'PADDLE SIZE', enabledInOfferPool: true,
+    describeCurrent: (level) => `${level * 20}% wider. Edge hits reach ${GAME_CONFIG.powers.paddleOuterEdgeElevationDegreesByLevel[level - 1]}°.`,
   },
   {
     id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL', enabledInOfferPool: true,
     describeCurrent: (level) => level === 5
-      ? 'Zaps 6 nearby bricks, with each zap chaining once.'
+      ? 'Zaps 5 nearby bricks, with each zap chaining once.'
       : `Zaps ${GAME_CONFIG.powers.electricPrimaryTargetsByLevel[level - 1]} nearby bricks.`,
   },
   {
     id: 'FIRE_BALL', name: 'FIRE BALL', enabledInOfferPool: true,
     describeCurrent: (level) => level === 5
-      ? 'Blasts the entire horizontal row.'
+      ? 'Blasts a 9-wide area across three rows.'
       : `Blasts a ${GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] * 2 + 1}-brick-wide horizontal area.`,
   },
   {
     id: 'WIND_BALL', name: 'WIND BALL', enabledInOfferPool: true,
     describeCurrent: (level) => level === 5
-      ? 'Strikes the entire column above.'
-      : `Strikes up to ${GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1]} spaces above.`,
+      ? 'Unleashes a widening tornado above the destroyed brick.'
+      : `Strikes ${GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1]} spaces above.`,
   },
   {
     id: 'HOMING_MISSILE', name: 'HOMING MISSILE', enabledInOfferPool: true,

@@ -437,9 +437,19 @@ export class GameScene extends Phaser.Scene {
       );
     }
     graphics.lineStyle(4, FIRE_EFFECT_COLOR, 0.75);
-    for (const effect of this.state.fireEffects) graphics.lineBetween(effect.x1, effect.y, effect.x2, effect.y);
+    for (const effect of this.state.fireEffects) {
+      graphics.lineBetween(effect.x1, effect.y, effect.x2, effect.y);
+      for (const y of effect.additionalYs ?? []) graphics.lineBetween(effect.x1, y, effect.x2, y);
+    }
     graphics.lineStyle(4, WIND_EFFECT_COLOR, 0.75);
-    for (const effect of this.state.windEffects) graphics.lineBetween(effect.x, effect.y1, effect.x, effect.y2);
+    for (const effect of this.state.windEffects) {
+      if (effect.topHalfWidth === undefined) graphics.lineBetween(effect.x, effect.y1, effect.x, effect.y2);
+      else {
+        graphics.lineBetween(effect.x - effect.topHalfWidth, effect.y1, effect.x + effect.topHalfWidth, effect.y1);
+        graphics.lineBetween(effect.x - effect.topHalfWidth, effect.y1, effect.x, effect.y2);
+        graphics.lineBetween(effect.x + effect.topHalfWidth, effect.y1, effect.x, effect.y2);
+      }
+    }
     const paddle = this.state.paddle;
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);

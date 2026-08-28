@@ -12,6 +12,7 @@ import {
 } from './combat';
 import { spawnSplitBalls, type BallState, type GameState } from './gameState';
 import { rankElectricTargets, selectMissileTarget, selectWindTargets } from './powerTargeting';
+import { getPaddleBounceElevationDegrees } from './paddleBounce';
 import { getPowerLevel } from './powers';
 
 export interface SimulationInput {
@@ -138,6 +139,14 @@ function triggerElectric(state: GameState, destruction: BrickDestruction): void 
   }
 }
 
+function setPaddleBounceDirection(ball: BallState, elevationDegrees: number, horizontalSign: number): void {
+  const speed = getBallSpeed(ball) || GAME_CONFIG.ball.speed;
+  const elevationRadians = elevationDegrees * Math.PI / 180;
+  const sign = horizontalSign === 0 ? (ball.velocity.x < 0 ? -1 : 1) : Math.sign(horizontalSign);
+  ball.velocity.x = speed * Math.cos(elevationRadians) * sign;
+  ball.velocity.y = -speed * Math.sin(elevationRadians);
+}
+
 function triggerWind(state: GameState, destruction: BrickDestruction): void {
   const level = getPowerLevel(state.powers, 'WIND_BALL');
   if (level === 0) return;
@@ -147,14 +156,17 @@ function triggerWind(state: GameState, destruction: BrickDestruction): void {
   const sourceCenterX = destruction.x + destruction.width / 2;
   const sourceCenterY = destruction.y + destruction.height / 2;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
-  const rangeSpaces = GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
+  const rangeSpaces = level === GAME_CONFIG.powers.maxLevel
+    ? 7
+    : GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
   const range = rangeSpaces * verticalPitch;
   state.windEffects.push({
     x: sourceCenterX,
-    y1: level === GAME_CONFIG.powers.maxLevel
-      ? GAME_CONFIG.playfield.top
-      : Math.max(GAME_CONFIG.playfield.top, sourceCenterY - range),
+    y1: Math.max(GAME_CONFIG.playfield.top, sourceCenterY - range),
     y2: sourceCenterY,
+    topHalfWidth: level === GAME_CONFIG.powers.maxLevel
+      ? GAME_CONFIG.bricks.brickWidth / 2 + GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap
+      : undefined,
     remainingSeconds: GAME_CONFIG.powers.windEffectSeconds,
   });
   for (const brick of targets) applyBrickDamage(state, brick, 1, 'WIND');
@@ -165,21 +177,29 @@ function triggerFire(state: GameState, destruction: BrickDestruction): void {
   if (level === 0) return;
   const sourceCenterX = destruction.x + destruction.width / 2;
   const sourceCenterY = destruction.y + destruction.height / 2;
-  const fullLine = level === 5;
   const radiusSpaces = GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] ?? 0;
-  const radius = (GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap) * radiusSpaces;
+  const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
+  const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
+  const radius = horizontalPitch * radiusSpaces;
   const targets: BrickState[] = [];
   for (const column of state.brickField.columns) {
     for (const brick of column) {
-      const verticallyIntersects = brick.y <= destruction.y + destruction.height
-        && brick.y + brick.height >= destruction.y;
-      const inRange = fullLine || Math.abs(brick.x + brick.width / 2 - sourceCenterX) <= radius;
+      const verticallyIntersects = level === GAME_CONFIG.powers.maxLevel
+        ? Math.abs(brick.y + brick.height / 2 - sourceCenterY) <= verticalPitch + GAME_CONFIG.bricks.verticalEdgeGap / 2
+        : brick.y <= destruction.y + destruction.height && brick.y + brick.height >= destruction.y;
+      const inRange = Math.abs(brick.x + brick.width / 2 - sourceCenterX) <= radius;
       if (verticallyIntersects && inRange) targets.push(brick);
     }
   }
-  const x1 = fullLine ? GAME_CONFIG.playfield.left : Math.max(GAME_CONFIG.playfield.left, sourceCenterX - radius);
-  const x2 = fullLine ? GAME_CONFIG.playfield.right : Math.min(GAME_CONFIG.playfield.right, sourceCenterX + radius);
-  state.fireEffects.push({ x1, x2, y: sourceCenterY, remainingSeconds: GAME_CONFIG.powers.fireEffectSeconds });
+  const x1 = Math.max(GAME_CONFIG.playfield.left, sourceCenterX - radius);
+  const x2 = Math.min(GAME_CONFIG.playfield.right, sourceCenterX + radius);
+  state.fireEffects.push({
+    x1, x2, y: sourceCenterY,
+    additionalYs: level === GAME_CONFIG.powers.maxLevel
+      ? [sourceCenterY - verticalPitch, sourceCenterY + verticalPitch]
+      : undefined,
+    remainingSeconds: GAME_CONFIG.powers.fireEffectSeconds,
+  });
   for (const brick of targets) applyBrickDamage(state, brick, 1, 'FIRE');
 }
 
@@ -226,7 +246,7 @@ function launchMissile(state: GameState): void {
   state.projectiles.push({
     id: state.nextProjectileId++,
     kind: 'MISSILE',
-    x: state.paddle.x + state.paddle.width * offset,
+    x: state.paddle.x + state.paddle.width / 2 * offset,
     y: state.paddle.y - state.paddle.height / 2,
     velocity: { x: 0, y: -GAME_CONFIG.powers.missileDeploymentSpeed },
     damage: 1,
@@ -265,11 +285,12 @@ function updateSplitting(state: GameState, deltaSeconds: number): void {
   const level = getPowerLevel(state.powers, 'SPLITTING_BALL');
   if (level === 0 || state.balls.length === 0) return;
   state.powers.splitTimerSeconds += deltaSeconds;
-  while (state.powers.splitTimerSeconds >= GAME_CONFIG.powers.splittingIntervalSeconds) {
-    state.powers.splitTimerSeconds -= GAME_CONFIG.powers.splittingIntervalSeconds;
+  const cooldown = GAME_CONFIG.powers.splittingCooldownSecondsByLevel[level - 1];
+  while (state.powers.splitTimerSeconds >= cooldown) {
+    state.powers.splitTimerSeconds -= cooldown;
     let oldest = state.balls[0];
     for (const ball of state.balls) if (ball.id < oldest.id) oldest = ball;
-    spawnSplitBalls(state, oldest, level);
+    spawnSplitBalls(state, oldest, 1);
   }
 }
 
@@ -580,8 +601,9 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
   const crossedPaddleTop = previousY + ball.radius <= paddleTop && ball.y + ball.radius >= paddleTop;
   if (ball.velocity.y > 0 && crossedPaddleTop && ball.x + ball.radius >= paddleLeft && ball.x - ball.radius <= paddleRight) {
     ball.y = paddleTop - ball.radius;
-    const hitOffset = (ball.x - paddle.x) / (paddle.width / 2);
-    setBallDirection(ball, hitOffset * GAME_CONFIG.ball.maxHorizontalRatio, true);
+    const hitOffset = ball.x - paddle.x;
+    const elevation = getPaddleBounceElevationDegrees(getPowerLevel(state.powers, 'PADDLE_SIZE'), Math.abs(hitOffset));
+    setPaddleBounceDirection(ball, elevation, hitOffset);
     ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
     recordBallPaddleContact(state.brickPressureAssist);
   }

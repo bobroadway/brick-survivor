@@ -41,8 +41,8 @@ export interface ElectricProcState {
   secondaryTargetIds: Set<string>;
   activeProjectileCount: number;
 }
-export interface FireEffectState { x1: number; x2: number; y: number; remainingSeconds: number }
-export interface WindEffectState { x: number; y1: number; y2: number; remainingSeconds: number }
+export interface FireEffectState { x1: number; x2: number; y: number; additionalYs?: number[]; remainingSeconds: number }
+export interface WindEffectState { x: number; y1: number; y2: number; topHalfWidth?: number; remainingSeconds: number }
 export interface GameState {
   paddle: PaddleState;
   balls: BallState[];

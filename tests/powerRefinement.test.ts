@@ -21,6 +21,7 @@ import {
 } from '../src/simulation/powerTargeting';
 import { resolveBrickDescentSpeed, type BrickSpeedClass } from '../src/simulation/difficulty';
 import { getBallTargetSpeed, stepSimulation } from '../src/simulation/simulation';
+import { getPaddleBounceElevationDegrees } from '../src/simulation/paddleBounce';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -162,10 +163,11 @@ function advanceElectricScenario(
 }
 
 function testElectricPrimaryProgressionAndChains(): void {
-  const expectedPrimaryCounts = [3, 4, 5, 6, 6];
+  const expectedPrimaryCounts = [2, 3, 4, 5, 5];
   for (let level = 1; level <= 5; level += 1) {
     const state = createElectricProcScenario(level);
     const primaries = state.projectiles.filter(({ kind }) => kind === 'ELECTRIC');
+    const primaryTargetIds = new Set(primaries.map(({ targetBrickId }) => targetBrickId));
     assert(primaries.length === expectedPrimaryCounts[level - 1], `Electric Lv${level} primary count mismatch`);
     assert(new Set(primaries.map(({ targetBrickId }) => targetBrickId)).size === primaries.length, `Electric Lv${level} duplicated a primary target`);
     addElectricSecondaryCandidates(state, 6);
@@ -173,12 +175,9 @@ function testElectricPrimaryProgressionAndChains(): void {
     if (level < 5) {
       assert(secondaryTargets.size === 0, `Electric Lv${level} incorrectly chained`);
     } else {
+      assert(secondaryTargets.size === 5, `Electric Lv5 did not reserve five unique secondary targets: ${[...secondaryTargets].join(',')}`);
       assert(
-        secondaryTargets.size === 6,
-        `Electric Lv5 did not reserve six unique secondary targets: ${[...secondaryTargets].join(',')}`,
-      );
-      assert(
-        [...secondaryTargets].every((id) => id.startsWith('secondary-')),
+        [...secondaryTargets].every((id) => !primaryTargetIds.has(id)),
         'Electric Lv5 selected a primary target as a secondary target',
       );
       assert(state.electricProcs.length === 0, 'completed Electric proc state was not cleaned up');
@@ -190,7 +189,7 @@ function testElectricLimitedAndDeadSecondaryTargets(): void {
   const limited = createElectricProcScenario(5);
   addElectricSecondaryCandidates(limited, 2);
   const limitedTargets = advanceElectricScenario(limited);
-  assert(limitedTargets.size === 2, 'Electric Lv5 relaxed uniqueness when only two secondary targets existed');
+  assert(limitedTargets.size === 3, 'Electric Lv5 relaxed uniqueness when only three non-primary targets existed');
 
   const interrupted = createElectricProcScenario(5);
   addElectricSecondaryCandidates(interrupted, 6);
@@ -206,7 +205,7 @@ function testElectricLimitedAndDeadSecondaryTargets(): void {
   assert(destroyedTargetId !== undefined, 'dead-target Electric scenario never created a secondary');
   assert(targetHistory.filter((id) => id === destroyedTargetId).length === 1, 'dead reserved secondary target was reused');
   assert(new Set(targetHistory).size === targetHistory.length, 'asynchronous secondary reservations duplicated a target');
-  assert(targetHistory.length <= 6, 'secondary Electric hits created a tertiary chain');
+  assert(targetHistory.length <= 5, 'secondary Electric hits created a tertiary chain');
 }
 
 function createDirectionalProcScenario(power: 'FIRE_BALL' | 'WIND_BALL', level: number) {
@@ -221,7 +220,7 @@ function createDirectionalProcScenario(power: 'FIRE_BALL' | 'WIND_BALL', level: 
 }
 
 function testFireWidthsAndVisuals(): void {
-  const radiusSpaces = [2, 3, 4, 5];
+  const radiusSpaces = [1, 2, 3, 4, 4];
   for (let level = 1; level <= 5; level += 1) {
     const { state } = createDirectionalProcScenario('FIRE_BALL', level);
     for (let space = -9; space <= 9; space += 1) {
@@ -231,15 +230,15 @@ function testFireWidthsAndVisuals(): void {
     const survivingSpaces = state.brickField.columns.flat()
       .filter(({ id }) => id.startsWith('fire-'))
       .map(({ id }) => Number(id.slice(5)));
-    const radius = level === 5 ? 9 : radiusSpaces[level - 1];
+    const radius = radiusSpaces[level - 1];
     for (let space = -9; space <= 9; space += 1) {
       if (space === 0) continue;
       assert(survivingSpaces.includes(space) === (Math.abs(space) > radius), `Fire Lv${level} range mismatch at space ${space}`);
     }
     const effect = state.fireEffects[0];
     assert(effect, `Fire Lv${level} visual missing`);
-    const expectedX1 = level === 5 ? GAME_CONFIG.playfield.left : 630 - radius * 60;
-    const expectedX2 = level === 5 ? GAME_CONFIG.playfield.right : 630 + radius * 60;
+    const expectedX1 = 630 - radius * 60;
+    const expectedX2 = 630 + radius * 60;
     assertNear(effect.x1, expectedX1, `Fire Lv${level} visual left edge`);
     assertNear(effect.x2, expectedX2, `Fire Lv${level} visual right edge`);
   }
@@ -258,6 +257,24 @@ function testFireWidthsAndVisuals(): void {
     stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
     assertNear(state.fireEffects[0][edgeKey], expectedEdge, `Fire visual did not clip at ${edgeKey} boundary`);
   }
+
+  const levelFive = createDirectionalProcScenario('FIRE_BALL', 5).state;
+  for (let row = -2; row <= 2; row += 1) {
+    for (let column = -5; column <= 5; column += 1) {
+      if (row === 0 && column === 0) continue;
+      addBrick(levelFive, makeBrick(`fire-grid-${row}-${column}`, 602 + column * 60, 400 + row * 24));
+    }
+  }
+  stepSimulation(levelFive, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
+  const survivors = new Set(levelFive.brickField.columns.flat().map(({ id }) => id));
+  for (let row = -2; row <= 2; row += 1) {
+    for (let column = -5; column <= 5; column += 1) {
+      if (row === 0 && column === 0) continue;
+      const shouldBeHit = Math.abs(row) <= 1 && Math.abs(column) <= 4;
+      assert(survivors.has(`fire-grid-${row}-${column}`) !== shouldBeHit, `Fire Lv5 geometry mismatch at ${row},${column}`);
+    }
+  }
+  assert(levelFive.fireEffects[0].additionalYs?.length === 2, 'Fire Lv5 visual did not show three rows');
 }
 
 function testWindRangesAndVisuals(): void {
@@ -270,7 +287,7 @@ function testWindRangesAndVisuals(): void {
     const survivingSpaces = state.brickField.columns.flat()
       .filter(({ id }) => id.startsWith('wind-space-'))
       .map(({ id }) => Number(id.slice('wind-space-'.length)));
-    const range = level === 5 ? 8 : GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1];
+    const range = level === 5 ? 7 : GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1];
     for (let space = 1; space <= 8; space += 1) {
       assert(survivingSpaces.includes(space) === (space > range), `Wind Lv${level} range mismatch at space ${space}`);
     }
@@ -278,12 +295,12 @@ function testWindRangesAndVisuals(): void {
     assert(effect, `Wind Lv${level} visual missing`);
     assertNear(
       effect.y1,
-      level === 5 ? GAME_CONFIG.playfield.top : effect.y2 - range * 24,
+      effect.y2 - range * 24,
       `Wind Lv${level} visual top`,
     );
   }
-  assert(getPowerDescription('FIRE_BALL', 1, false).includes('5-brick-wide'), 'Fire Lv1 description stale');
-  assert(getPowerDescription('FIRE_BALL', 4, false).includes('11-brick-wide'), 'Fire Lv4 description stale');
+  assert(getPowerDescription('FIRE_BALL', 1, false).includes('3-brick-wide'), 'Fire Lv1 description stale');
+  assert(getPowerDescription('FIRE_BALL', 4, false).includes('9-brick-wide'), 'Fire Lv4 description stale');
   assert(getPowerDescription('WIND_BALL', 1, false).includes('4 spaces'), 'Wind Lv1 description stale');
   assert(getPowerDescription('ELECTRIC_BALL', 5, false).includes('chaining once'), 'Electric Lv5 description stale');
 }
@@ -329,8 +346,8 @@ function acquireToMax(state: ReturnType<typeof createInitialGameState>, id: Powe
 function testOffersAndMaxPairs(): void {
   const powers = createRunPowerState();
   const eligible = getEligiblePowerIds(powers);
-  assert(eligible.join(',') === 'GUN,PIERCING_BALL,SPLITTING_BALL,ELECTRIC_BALL,FIRE_BALL,WIND_BALL,HOMING_MISSILE', 'active offer pool mismatch');
-  assert(!eligible.includes('PADDLE_SIZE'), 'Paddle Size must be disabled');
+  assert(eligible.join(',') === 'GUN,PIERCING_BALL,SPLITTING_BALL,PADDLE_SIZE,ELECTRIC_BALL,FIRE_BALL,WIND_BALL,HOMING_MISSILE', 'active offer pool mismatch');
+  assert(eligible.includes('PADDLE_SIZE'), 'Paddle Size must be offer-eligible');
   const appearances = new Map<PowerId, number>();
   for (let draw = 0; draw < 600; draw += 1) {
     powers.pendingSelections = 1;
@@ -338,7 +355,7 @@ function testOffersAndMaxPairs(): void {
     for (const id of powers.currentChoices) if (id) appearances.set(id, (appearances.get(id) ?? 0) + 1);
     powers.currentChoices = [];
   }
-  for (const id of eligible) assert((appearances.get(id) ?? 0) > 200, `${id} offer frequency unexpectedly low`);
+  for (const id of eligible) assert((appearances.get(id) ?? 0) > 180, `${id} offer frequency unexpectedly low`);
 
   const state = createInitialGameState();
   for (const id of ['GUN', 'FIRE_BALL', 'ELECTRIC_BALL', 'WIND_BALL', 'HOMING_MISSILE'] as PowerId[]) acquireToMax(state, id);
@@ -597,6 +614,24 @@ function testWindLevelsAndNoRecursion(): void {
   );
 }
 
+function testWindTornadoGeometry(): void {
+  const source: BrickDestruction = { source: 'BALL', x: 602, y: 400, width: 56, height: 20 };
+  const candidates: BrickState[] = [];
+  for (let row = 1; row <= 8; row += 1) {
+    for (let column = -2; column <= 2; column += 1) {
+      candidates.push(makeBrick(`tornado-${row}-${column}`, 602 + column * 60, 400 - row * 24));
+    }
+  }
+  const selected = new Set(selectWindTargets(5, source, candidates).map(({ id }) => id));
+  for (let row = 1; row <= 8; row += 1) {
+    for (let column = -2; column <= 2; column += 1) {
+      const expected = row <= 7 && (row <= 3 ? column === 0 : Math.abs(column) <= 1);
+      assert(selected.has(`tornado-${row}-${column}`) === expected, `Wind tornado mismatch at ${row},${column}`);
+    }
+  }
+  assert(selected.size === 15, 'Wind tornado did not select exactly 15 occupied geometric cells');
+}
+
 function testMultiballTargetSpeeds(): void {
   const expected = [240, 228, 216, 204, 192, 180, 180];
   for (let count = 1; count <= expected.length; count += 1) {
@@ -605,9 +640,9 @@ function testMultiballTargetSpeeds(): void {
 }
 
 function testSplittingTuningAndAcquisition(): void {
-  assert(GAME_CONFIG.powers.splittingIntervalSeconds === 15, 'Splitting interval must be 15 seconds');
-  assert(getPowerDescription('SPLITTING_BALL', 1, true).includes('15 seconds'), 'Splitting selection text is stale');
-  assert(getPowerDescription('SPLITTING_BALL', 3, false).includes('15 seconds'), 'Splitting current text is stale');
+  assert(GAME_CONFIG.powers.splittingCooldownSecondsByLevel.join(',') === '30,25,20,15,10', 'Splitting cooldown progression mismatch');
+  assert(getPowerDescription('SPLITTING_BALL', 1, true).includes('30 seconds'), 'Splitting selection text is stale');
+  assert(getPowerDescription('SPLITTING_BALL', 3, false).includes('20 seconds'), 'Splitting current text is stale');
 
   const state = createInitialGameState();
   state.powers.currentChoices = ['SPLITTING_BALL'];
@@ -620,6 +655,43 @@ function testSplittingTuningAndAcquisition(): void {
   assert(acquirePower(state, 'SPLITTING_BALL'), 'Splitting upgrade failed');
   assert(state.balls.length === 2, 'Splitting upgrade incorrectly caused an immediate split');
   assertNear(state.powers.splitTimerSeconds, 7.5, 'Splitting upgrade timer progress');
+
+  state.powers.splitTimerSeconds = 26;
+  state.powers.currentChoices = ['SPLITTING_BALL'];
+  state.powers.pendingSelections = 1;
+  assert(acquirePower(state, 'SPLITTING_BALL'), 'Splitting threshold upgrade failed');
+  assert(state.balls.length === 2, 'Splitting threshold upgrade split while selection was frozen');
+  stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 1 / 120, 1 / 120);
+  assert(Number(state.balls.length) === 3, 'Splitting did not apply elapsed progress on next active step');
+  assertNear(state.powers.splitTimerSeconds, 6 + 1 / 120, 'Splitting retained the deterministic cooldown remainder');
+}
+
+function testPaddleSizeWidthsAndBounceAngles(): void {
+  const expectedEdges = [40, 35, 30, 25, 15];
+  const baseHalfWidth = GAME_CONFIG.paddle.width / 2;
+  assertNear(getPaddleBounceElevationDegrees(0, 0), 90, 'base center elevation');
+  assertNear(getPaddleBounceElevationDegrees(0, baseHalfWidth), 45, 'base edge elevation');
+  for (let level = 1; level <= 5; level += 1) {
+    const state = createInitialGameState();
+    for (let acquired = 1; acquired <= level; acquired += 1) {
+      state.powers.currentChoices = ['PADDLE_SIZE'];
+      state.powers.pendingSelections = 1;
+      assert(acquirePower(state, 'PADDLE_SIZE'), `Paddle Size Lv${acquired} acquisition failed`);
+    }
+    assertNear(state.paddle.width, GAME_CONFIG.paddle.width * (1 + level * 0.2), `Paddle Size Lv${level} width`);
+    assertNear(getPaddleBounceElevationDegrees(level, 0), 90, `Paddle Size Lv${level} center elevation`);
+    assertNear(getPaddleBounceElevationDegrees(level, baseHalfWidth), 45, `Paddle Size Lv${level} original edge elevation`);
+    const outerOffset = state.paddle.width / 2;
+    assertNear(getPaddleBounceElevationDegrees(level, outerOffset), expectedEdges[level - 1], `Paddle Size Lv${level} outer elevation`);
+    let previous = 90;
+    for (let sample = 0; sample <= 20; sample += 1) {
+      const right = getPaddleBounceElevationDegrees(level, outerOffset * sample / 20);
+      const left = getPaddleBounceElevationDegrees(level, -outerOffset * sample / 20);
+      assertNear(left, right, `Paddle Size Lv${level} symmetry sample ${sample}`);
+      assert(right <= previous + 1e-9 && right >= expectedEdges[level - 1] - 1e-9, `Paddle Size Lv${level} non-monotone sample ${sample}`);
+      previous = right;
+    }
+  }
 }
 
 function testGunCadence(): void {
@@ -659,12 +731,12 @@ function testMissileTargetPriority(): void {
   assert(selectMissileTarget(520, [tiedNear, higher], new Set(['tied-near']))?.id === 'higher', 'missile selected a reserved target');
 }
 
-function collectMissileLaunches(level: number): Array<{ time: number; x: number }> {
+function collectMissileLaunches(level: number, paddleWidth = 200): Array<{ time: number; x: number }> {
   const state = createInitialGameState();
   state.brickField.columns.forEach((column) => column.splice(0));
   addBrick(state, makeBrick('entry-blocker', 42, 8));
   state.paddle.x = 600;
-  state.paddle.width = 200;
+  state.paddle.width = paddleWidth;
   state.powers.levels.HOMING_MISSILE = level;
   state.powers.missilesRemainingInVolley = level;
   const launches: Array<{ time: number; x: number }> = [];
@@ -687,13 +759,22 @@ function testMissileLaunchPositionsAndCadence(): void {
     const launches = collectMissileLaunches(level);
     const expectedOffsets = GAME_CONFIG.powers.missileLaunchOffsets.slice(0, level);
     assert(launches.length === level, `Missile Lv${level} launch count mismatch`);
-    launches.forEach((launch, index) => assertNear(launch.x, 600 + 200 * expectedOffsets[index], `Missile Lv${level} launch ${index + 1} mount`));
+    launches.forEach((launch, index) => assertNear(launch.x, 600 + 100 * expectedOffsets[index], `Missile Lv${level} launch ${index + 1} mount`));
     const interval = level === 5
       ? GAME_CONFIG.powers.missileLevelFiveLaunchIntervalSeconds
       : GAME_CONFIG.powers.missileLaunchIntervalSeconds;
     for (let index = 1; index < launches.length; index += 1) {
       assert(Math.abs(launches[index].time - launches[index - 1].time - interval) <= GAME_CONFIG.fixedStepSeconds + 1e-9, `Missile Lv${level} cadence mismatch`);
     }
+  }
+  for (const paddleLevel of [0, 1, 3, 5]) {
+    const width = GAME_CONFIG.paddle.width * (1 + paddleLevel * 0.2);
+    const launches = collectMissileLaunches(5, width);
+    launches.forEach((launch, index) => assertNear(
+      launch.x,
+      600 + width / 2 * GAME_CONFIG.powers.missileLaunchOffsets[index],
+      `Missile ports with Paddle Size Lv${paddleLevel}, launch ${index + 1}`,
+    ));
   }
 }
 
@@ -824,8 +905,10 @@ testPiercedBallKillProcs();
 testDirectionalPiercePassThrough();
 testDirectionalPierceBallKillProcs();
 testWindLevelsAndNoRecursion();
+testWindTornadoGeometry();
 testMultiballTargetSpeeds();
 testSplittingTuningAndAcquisition();
+testPaddleSizeWidthsAndBounceAngles();
 testGunCadence();
 testMissileTargetPriority();
 testMissileLaunchPositionsAndCadence();

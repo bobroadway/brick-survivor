@@ -72,12 +72,23 @@ export function selectWindTargets(
   source: BrickDestruction,
   bricks: readonly BrickState[],
 ): BrickState[] {
-  const eligible = rankWindTargets(source, bricks);
-  if (level >= GAME_CONFIG.powers.maxLevel) return eligible;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
+  const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
+  const sourceCenterX = getCenterX(source);
+  const sourceCenterY = getCenterY(source);
+  if (level >= GAME_CONFIG.powers.maxLevel) {
+    return bricks
+      .filter((brick) => {
+        const spacesAbove = (sourceCenterY - getCenterY(brick)) / verticalPitch;
+        if (spacesAbove <= 0 || spacesAbove > 7) return false;
+        const columnsAway = Math.abs(getCenterX(brick) - sourceCenterX) / horizontalPitch;
+        return spacesAbove <= 3 ? columnsAway <= 0.5 : columnsAway <= 1.5;
+      })
+      .sort((left, right) => right.y - left.y || left.x - right.x || left.id.localeCompare(right.id));
+  }
+  const eligible = rankWindTargets(source, bricks);
   const rangeSpaces = GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
   const range = rangeSpaces * verticalPitch;
-  const sourceCenterY = getCenterY(source);
   return eligible.filter((brick) => sourceCenterY - getCenterY(brick) <= range);
 }
 
