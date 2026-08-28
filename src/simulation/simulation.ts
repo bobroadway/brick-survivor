@@ -14,6 +14,7 @@ import { spawnSplitBalls, type BallState, type GameState } from './gameState';
 import { rankElectricTargets, selectMissileTarget, selectWindTargets } from './powerTargeting';
 import { getPaddleBounceElevationDegrees } from './paddleBounce';
 import { getPowerLevel } from './powers';
+import { getBrickDensityDifficultyLevel, getVirtualDifficultyLevel } from './survivalDifficulty';
 
 export interface SimulationInput {
   movementAxis: number;
@@ -25,6 +26,7 @@ export enum SimulationStepOutcome {
   None,
   FinalBallLost,
   BrickOverflow,
+  Win,
 }
 
 export function getBallSpeed(ball: BallState): number {
@@ -653,16 +655,24 @@ export function stepSimulation(
   playerDeltaSeconds: number,
   worldDeltaSeconds: number = playerDeltaSeconds,
 ): SimulationStepOutcome {
+  state.survivalTimeSeconds = Math.min(
+    GAME_CONFIG.survival.winTimeSeconds,
+    state.survivalTimeSeconds + Math.max(0, worldDeltaSeconds),
+  );
+  if (state.survivalTimeSeconds >= GAME_CONFIG.survival.winTimeSeconds) {
+    return SimulationStepOutcome.Win;
+  }
   updatePaddle(state, input, playerDeltaSeconds);
   advanceBrickPressureAssist(state.brickPressureAssist, worldDeltaSeconds);
+  const virtualDifficultyLevel = getVirtualDifficultyLevel(state.survivalTimeSeconds);
   const effectiveBrickSpeedLevel = getEffectiveBrickSpeedLevel(
-    state.progression.level,
+    virtualDifficultyLevel,
     state.brickPressureAssist,
   );
   if (advanceBrickField(
     state.brickField,
     worldDeltaSeconds,
-    state.progression.level,
+    getBrickDensityDifficultyLevel(state.survivalTimeSeconds),
     effectiveBrickSpeedLevel,
   )) {
     return SimulationStepOutcome.BrickOverflow;

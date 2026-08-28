@@ -3,6 +3,7 @@ import { GAME_CONFIG } from '../../simulation/config';
 import { RenderQualityManager } from '../rendering/RenderQualityManager';
 import {
   createPauseMenuState,
+  getMenuTitle,
   isFocusAvailable,
   movePauseMenuHorizontal,
   movePauseMenuVertical,
@@ -119,7 +120,7 @@ export class PauseMenu {
   show(mode: MenuMode): void {
     this.mode = mode;
     resetPauseMenuState(this.state, mode);
-    this.title.setText(mode === 'GAME_OVER' ? 'YOU DIED' : 'BRICK SURVIVOR');
+    this.title.setText(getMenuTitle(mode));
     this.main.setVisible(true);
     this.modal.setVisible(false);
     this.refresh();

@@ -4,6 +4,7 @@ export enum GamePhase {
   Paused = 'PAUSED',
   LifeLost = 'LIFE_LOST',
   GameOver = 'GAME_OVER',
+  Win = 'WIN',
   LevelUpSlowdown = 'LEVEL_UP_SLOWDOWN',
   LevelUp = 'LEVEL_UP',
   LevelUpSpeedup = 'LEVEL_UP_SPEEDUP',
@@ -58,6 +59,12 @@ export function continueAfterLifeLost(session: SessionState): boolean {
 
 export function enterGameOver(session: SessionState): void {
   session.phase = GamePhase.GameOver;
+  session.phaseTimerSeconds = 0;
+  session.pausedGameplayPhase = null;
+}
+
+export function enterWin(session: SessionState): void {
+  session.phase = GamePhase.Win;
   session.phaseTimerSeconds = 0;
   session.pausedGameplayPhase = null;
 }

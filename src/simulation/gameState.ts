@@ -58,6 +58,7 @@ export interface GameState {
   electricProcs: ElectricProcState[];
   nextElectricProcId: number;
   brickPressureAssist: BrickPressureAssistState;
+  survivalTimeSeconds: number;
 }
 
 export function createInitialGameState(): GameState {
@@ -92,6 +93,7 @@ export function createInitialGameState(): GameState {
     electricProcs: [],
     nextElectricProcId: 1,
     brickPressureAssist: createBrickPressureAssistState(),
+    survivalTimeSeconds: 0,
   };
 }
 
@@ -101,7 +103,9 @@ export function spawnSplitBalls(state: GameState, parent: BallState, count: numb
 
 export function prepareSingleBall(state: GameState): void {
   const { paddle, ball } = GAME_CONFIG;
-  state.paddle.x = GAME_CONFIG.width / 2;
+  const minimumX = GAME_CONFIG.playfield.left + state.paddle.width / 2;
+  const maximumX = GAME_CONFIG.playfield.right - state.paddle.width / 2;
+  state.paddle.x = Math.max(minimumX, Math.min(maximumX, state.paddle.x));
   const horizontalVelocity = ball.speed * ball.initialHorizontalRatio;
   state.balls = [{
     id: state.nextBallId,

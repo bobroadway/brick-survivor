@@ -32,12 +32,12 @@ function advanceFixedSeconds(state: ReturnType<typeof createBrickPressureAssistS
 
 function testGraceRampRecoveryAndReversal(): void {
   const assist = createBrickPressureAssistState();
-  advanceFixedSeconds(assist, 5);
-  assertNear(assist.brickPressureAssistLevels, 0, 'first five seconds must have no assistance');
-  assertNear(assist.trappedBallSpeedBoost, 0, 'first five seconds must have no ball boost');
+  advanceFixedSeconds(assist, 7);
+  assertNear(assist.brickPressureAssistLevels, 0, 'first seven seconds must have no assistance');
+  assertNear(assist.trappedBallSpeedBoost, 0, 'first seven seconds must have no ball boost');
   advanceFixedSeconds(assist, 1);
-  assertNear(assist.brickPressureAssistLevels, 1, 'six-second assistance');
-  assertNear(assist.trappedBallSpeedBoost, 0.05, 'six-second ball boost');
+  assertNear(assist.brickPressureAssistLevels, 1, 'eight-second assistance');
+  assertNear(assist.trappedBallSpeedBoost, 0.05, 'eight-second ball boost');
   advanceFixedSeconds(assist, 4);
   assertNear(assist.brickPressureAssistLevels, 5, 'maximum assistance');
   assertNear(assist.trappedBallSpeedBoost, 0.25, 'maximum trapped-ball boost');
@@ -142,7 +142,7 @@ function testBallAndPaddleRemainUnaffected(): void {
   const state = createInitialGameState();
   const velocity = { ...state.balls[0].velocity };
   const paddleX = state.paddle.x;
-  advanceFixedSeconds(state.brickPressureAssist, 10);
+  advanceFixedSeconds(state.brickPressureAssist, 12);
   assertNear(state.balls[0].velocity.x, velocity.x, 'assistance changed ball horizontal velocity');
   assertNear(state.balls[0].velocity.y, velocity.y, 'assistance changed ball vertical velocity');
   assertNear(state.paddle.x, paddleX, 'assistance changed paddle position');

@@ -49,11 +49,11 @@ export function recordBallPaddleContact(state: BrickPressureAssistState): void {
 }
 
 export function getEffectiveBrickSpeedLevel(
-  actualPlayerLevel: number,
+  baseDifficultyLevel: number,
   state: BrickPressureAssistState,
 ): number {
   return Math.max(
     GAME_CONFIG.progression.startingLevel,
-    actualPlayerLevel - state.brickPressureAssistLevels,
+    baseDifficultyLevel - state.brickPressureAssistLevels,
   );
 }

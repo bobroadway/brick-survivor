@@ -1,7 +1,5 @@
 import Phaser from 'phaser';
-import { getActiveBrickCount } from '../../simulation/brickField';
 import { GAME_CONFIG } from '../../simulation/config';
-import { getBrickDescentSpeedRange } from '../../simulation/difficulty';
 import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
 import {
@@ -12,7 +10,6 @@ import {
   type PowerId,
 } from '../../simulation/powers';
 import {
-  getBallSpeed,
   SimulationStepOutcome,
   stepSimulation,
   type SimulationInput,
@@ -24,6 +21,7 @@ import {
   buildToPause,
   enterBuild,
   enterGameOver,
+  enterWin,
   enterLevelUp,
   finishLevelUpSpeedup,
   GamePhase,
@@ -43,6 +41,14 @@ import { PowerChoiceOverlay } from '../ui/PowerChoiceOverlay';
 const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f, MISSILE: 0xff8a3d } as const;
 const FIRE_EFFECT_COLOR = 0xef5350;
 const WIND_EFFECT_COLOR = 0x76a982;
+const HUD_LAYOUT = {
+  rowCenterY: GAME_CONFIG.height - 30,
+  leftPadding: 52,
+  xpBarCenterX: GAME_CONFIG.width / 2,
+  xpBarWidth: 320,
+  xpBarHeight: 8,
+  groupGap: 24,
+} as const;
 
 export class GameScene extends Phaser.Scene {
   private state!: GameState;
@@ -52,10 +58,9 @@ export class GameScene extends Phaser.Scene {
   private graphics!: Phaser.GameObjects.Graphics;
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
   private readonly levelUpGhosts = new Map<number, Array<{ x: number; y: number }>>();
-  private debugText?: Phaser.GameObjects.Text;
+  private survivalTimerText!: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
-  private levelText!: Phaser.GameObjects.Text;
-  private xpText!: Phaser.GameObjects.Text;
+  private progressionText!: Phaser.GameObjects.Text;
   private xpBarFill!: Phaser.GameObjects.Rectangle;
   private pauseHintText!: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
@@ -72,10 +77,7 @@ export class GameScene extends Phaser.Scene {
     mouseDisplacement: 0,
     speedMultiplier: 1,
   };
-  private lastDebugFps = -1;
-  private lastDebugBallSpeed = -1;
-  private lastDebugBrickCount = -1;
-  private lastDebugLevel = -1;
+  private lastDisplayedSurvivalSecond = -1;
   private lastHudLevel = -1;
   private lastHudXp = -1;
 
@@ -93,22 +95,37 @@ export class GameScene extends Phaser.Scene {
       () => this.pauseIfRunning(),
       () => this.handlePrimaryPointerDown(),
     );
-    if (GAME_CONFIG.debug.enabled) {
-      this.debugText = this.renderQuality.addText(470, 680, '', {
-        color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
-      }).setDepth(10);
-    }
-    this.livesText = this.renderQuality.addText(52, 690, '', {
+    const xpBarLeft = HUD_LAYOUT.xpBarCenterX - HUD_LAYOUT.xpBarWidth / 2;
+    const xpBarRight = HUD_LAYOUT.xpBarCenterX + HUD_LAYOUT.xpBarWidth / 2;
+    this.survivalTimerText = this.renderQuality.addText(
+      xpBarRight + HUD_LAYOUT.groupGap,
+      HUD_LAYOUT.rowCenterY,
+      '0:00', {
+      color: '#aeb8c8', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
+    }).setOrigin(0, 0.5).setDepth(10);
+    this.livesText = this.renderQuality.addText(HUD_LAYOUT.leftPadding, HUD_LAYOUT.rowCenterY, '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
-    }).setDepth(10);
-    this.levelText = this.renderQuality.addText(155, 690, '', {
+    }).setOrigin(0, 0.5).setDepth(10);
+    this.progressionText = this.renderQuality.addText(
+      xpBarLeft - HUD_LAYOUT.groupGap,
+      HUD_LAYOUT.rowCenterY,
+      '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '14px', fontStyle: 'bold',
-    }).setDepth(10);
-    this.xpText = this.renderQuality.addText(245, 690, '', {
-      color: '#aeb8c8', fontFamily: 'Consolas, monospace', fontSize: '14px',
-    }).setDepth(10);
-    this.add.rectangle(365, 702, 92, 6, 0x273243).setOrigin(0, 0.5).setDepth(10);
-    this.xpBarFill = this.add.rectangle(365, 702, 92, 6, 0x78c6d0)
+    }).setOrigin(1, 0.5).setDepth(10);
+    this.add.rectangle(
+      HUD_LAYOUT.xpBarCenterX,
+      HUD_LAYOUT.rowCenterY,
+      HUD_LAYOUT.xpBarWidth,
+      HUD_LAYOUT.xpBarHeight,
+      0x273243,
+    ).setDepth(10);
+    this.xpBarFill = this.add.rectangle(
+      xpBarLeft,
+      HUD_LAYOUT.rowCenterY,
+      HUD_LAYOUT.xpBarWidth,
+      HUD_LAYOUT.xpBarHeight,
+      0x78c6d0,
+    )
       .setOrigin(0, 0.5).setDepth(11);
     this.pauseHintText = this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'ESC — PAUSE', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
@@ -159,7 +176,7 @@ export class GameScene extends Phaser.Scene {
     this.updateProgressionHud();
     this.applyPhasePresentation();
     this.drawGame();
-    this.updateDebugText();
+    this.updateSurvivalTimerText();
   }
 
   update(_time: number, deltaMilliseconds: number): void {
@@ -193,6 +210,12 @@ export class GameScene extends Phaser.Scene {
         this.applyPhasePresentation();
         break;
       }
+      if (outcome === SimulationStepOutcome.Win) {
+        this.clearLevelUpTransitionGhosts();
+        enterWin(this.session);
+        this.applyPhasePresentation();
+        break;
+      }
       if (outcome === SimulationStepOutcome.FinalBallLost) {
         this.handleFinalBallLost();
         break;
@@ -204,7 +227,7 @@ export class GameScene extends Phaser.Scene {
     this.advanceLevelUpTransition(frameSeconds);
     this.drawGame();
     this.updateProgressionHud();
-    this.updateDebugText();
+    this.updateSurvivalTimerText();
   }
 
   private applyPhasePresentation(): void {
@@ -310,7 +333,7 @@ export class GameScene extends Phaser.Scene {
       this.handleConfirmationKey(code);
       return;
     }
-    if (this.session.phase === GamePhase.GameOver) {
+    if (this.session.phase === GamePhase.GameOver || this.session.phase === GamePhase.Win) {
       if (code === 'Enter' || code === 'NumpadEnter') this.pauseMenu.activateFocused();
       else this.navigatePauseMenu(code);
       return;
@@ -362,10 +385,11 @@ export class GameScene extends Phaser.Scene {
     this.applyPhasePresentation();
   }
 
-  private getMenuMode(): 'START' | 'PAUSE' | 'GAME_OVER' | null {
+  private getMenuMode(): 'START' | 'PAUSE' | 'GAME_OVER' | 'WIN' | null {
     if (this.session.phase === GamePhase.Ready) return 'START';
     if (this.session.phase === GamePhase.Paused) return 'PAUSE';
     if (this.session.phase === GamePhase.GameOver) return 'GAME_OVER';
+    if (this.session.phase === GamePhase.Win) return 'WIN';
     return null;
   }
 
@@ -469,26 +493,13 @@ export class GameScene extends Phaser.Scene {
     this.syncBallVisuals();
   }
 
-  private updateDebugText(): void {
-    if (!this.debugText) return;
-    const fps = Math.round(this.game.loop.actualFps);
-    const ballSpeed = this.state.balls[0] ? Math.round(getBallSpeed(this.state.balls[0])) : 0;
-    const brickCount = getActiveBrickCount(this.state.brickField);
-    if (
-      fps === this.lastDebugFps
-      && ballSpeed === this.lastDebugBallSpeed
-      && brickCount === this.lastDebugBrickCount
-      && this.state.progression.level === this.lastDebugLevel
-    ) return;
-    this.lastDebugFps = fps;
-    this.lastDebugBallSpeed = ballSpeed;
-    this.lastDebugBrickCount = brickCount;
-    this.lastDebugLevel = this.state.progression.level;
-    const speedRange = getBrickDescentSpeedRange(this.state.progression.level);
-    this.debugText.setText(
-      `FPS ${fps}  BALL ${ballSpeed} px/s\n`
-      + `BRICKS ${brickCount}  SPEEDS ${speedRange.minimum}–${speedRange.maximum}`,
-    );
+  private updateSurvivalTimerText(): void {
+    const totalSeconds = Math.floor(this.state.survivalTimeSeconds);
+    if (totalSeconds === this.lastDisplayedSurvivalSecond) return;
+    this.lastDisplayedSurvivalSecond = totalSeconds;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    this.survivalTimerText.setText(`${minutes}:${seconds.toString().padStart(2, '0')}`);
   }
 
   private syncBallVisuals(): void {
@@ -524,8 +535,7 @@ export class GameScene extends Phaser.Scene {
     if (level === this.lastHudLevel && currentXp === this.lastHudXp) return;
     this.lastHudLevel = level;
     this.lastHudXp = currentXp;
-    this.levelText.setText(`LEVEL ${level}`);
-    this.xpText.setText(`XP ${currentXp} / ${xpRequiredForNextLevel}`);
+    this.progressionText.setText(`LEVEL ${level}   XP ${currentXp} / ${xpRequiredForNextLevel}`);
     this.xpBarFill.setScale(currentXp / xpRequiredForNextLevel, 1);
   }
 
