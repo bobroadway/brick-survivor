@@ -2,7 +2,7 @@ import { damageBrick, type BrickState } from './brickField';
 import type { GameState } from './gameState';
 import { awardRunXp } from './progression';
 
-export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND' | 'MISSILE';
+export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND' | 'MISSILE' | 'ICE';
 
 export interface BrickDestruction {
   source: DamageSource;
@@ -25,6 +25,16 @@ export function applyBrickDamage(
 ): BrickDestruction | null {
   const xpAwarded = damageBrick(state.brickField, brick, damage);
   if (xpAwarded <= 0) return null;
+  return awardBrickDestruction(state, brick, source);
+}
+
+/** Records an already-removed brick exactly once at the caller's authoritative removal point. */
+export function awardBrickDestruction(
+  state: GameState,
+  brick: Pick<BrickState, 'x' | 'y' | 'width' | 'height' | 'xpValue'>,
+  source: DamageSource,
+): BrickDestruction {
+  const xpAwarded = brick.xpValue;
   const rewards = awardRunXp(state.progression, xpAwarded);
   state.powers.pendingSelections += rewards.length;
   return { source, x: brick.x, y: brick.y, width: brick.width, height: brick.height };

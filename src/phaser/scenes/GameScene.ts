@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../../simulation/config';
+import { getElectricProjectileVisual } from '../../simulation/electricVisual';
 import {
   getBrickDangerDepthProgress,
   getDangerVignetteTarget,
@@ -8,6 +9,8 @@ import {
 } from '../../simulation/dangerPresentation';
 import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
+import { isFrozenBrick, isPendingFreezeBrick } from '../../simulation/iceBall';
+import { getTransientEffectAlpha } from '../../simulation/transientEffect';
 import {
   acquirePower,
   banPowerChoice,
@@ -329,10 +332,12 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.session.phase === GamePhase.LevelUp) {
-      if (code === 'Enter' || code === 'NumpadEnter') this.powerChoiceOverlay.activateFocused();
+      if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') this.powerChoiceOverlay.activateFocused();
       else if (code === 'KeyR') this.rerollPowers();
-      else if (['ArrowLeft', 'ArrowUp', 'KeyA', 'KeyW'].includes(code)) this.powerChoiceOverlay.move(-1);
-      else if (['ArrowRight', 'ArrowDown', 'KeyD', 'KeyS'].includes(code)) this.powerChoiceOverlay.move(1);
+      else if (code === 'ArrowLeft' || code === 'KeyA') this.powerChoiceOverlay.move('left');
+      else if (code === 'ArrowRight' || code === 'KeyD') this.powerChoiceOverlay.move('right');
+      else if (code === 'ArrowUp' || code === 'KeyW') this.powerChoiceOverlay.move('up');
+      else if (code === 'ArrowDown' || code === 'KeyS') this.powerChoiceOverlay.move('down');
       return;
     }
     if (this.session.phase === GamePhase.Build) {
@@ -383,13 +388,14 @@ export class GameScene extends Phaser.Scene {
 
   private rerollPowers(): void {
     if (this.session.phase !== GamePhase.LevelUp || !rerollPowerChoices(this.state.powers)) return;
-    this.powerChoiceOverlay.show(this.state);
+    this.powerChoiceOverlay.show(this.state, true, 1, { kind: 'reroll' });
   }
 
   private banPower(id: PowerId): void {
+    const slot = this.state.powers.currentChoices.indexOf(id);
     if (this.session.phase !== GamePhase.LevelUp || !banPowerChoice(this.state.powers, id)) return;
     if (this.state.powers.currentChoices.some((choice) => choice !== null)) {
-      this.powerChoiceOverlay.show(this.state);
+      this.powerChoiceOverlay.show(this.state, true, 1, { kind: 'choose', slot: Math.max(0, slot) });
       return;
     }
     beginLevelUpSpeedup(this.session);
@@ -456,18 +462,26 @@ export class GameScene extends Phaser.Scene {
 
     for (const column of this.state.brickField.columns) {
       for (const brick of column) {
-        const color = GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
-        graphics.fillStyle(color);
-        if (brick.y < field.top) {
-          const visibleHeight = brick.y + brick.height - field.top;
-          if (visibleHeight > 0) graphics.fillRect(brick.x, field.top, brick.width, visibleHeight);
-        } else {
-          graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
-        }
+        const color = isFrozenBrick(brick)
+          ? GAME_CONFIG.rendering.frozenBrickFillColor
+          : isPendingFreezeBrick(brick)
+            ? GAME_CONFIG.rendering.pendingFrozenBrickFillColor
+            : GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
+        this.drawBrick(graphics, brick, color, field.top);
       }
     }
     for (const projectile of this.state.projectiles) {
       graphics.lineStyle(3, PROJECTILE_COLORS[projectile.kind], 1);
+      if (projectile.kind === 'ELECTRIC') {
+        const visual = getElectricProjectileVisual(projectile);
+        graphics.lineBetween(
+          visual.x,
+          visual.y,
+          visual.x - visual.directionX * visual.length,
+          visual.y - visual.directionY * visual.length,
+        );
+        continue;
+      }
       const speed = Math.hypot(projectile.velocity.x, projectile.velocity.y);
       const directionX = speed > 0 ? projectile.velocity.x / speed : 0;
       const directionY = speed > 0 ? projectile.velocity.y / speed : -1;
@@ -478,19 +492,37 @@ export class GameScene extends Phaser.Scene {
         projectile.y - directionY * GAME_CONFIG.powers.projectileLength,
       );
     }
-    graphics.lineStyle(4, FIRE_EFFECT_COLOR, 0.75);
     for (const effect of this.state.fireEffects) {
+      const alpha = 0.75 * getTransientEffectAlpha(
+        effect.remainingSeconds,
+        GAME_CONFIG.powers.fireEffectSeconds,
+      );
+      graphics.lineStyle(4, FIRE_EFFECT_COLOR, alpha);
       graphics.lineBetween(effect.x1, effect.y, effect.x2, effect.y);
       for (const y of effect.additionalYs ?? []) graphics.lineBetween(effect.x1, y, effect.x2, y);
     }
-    graphics.lineStyle(4, WIND_EFFECT_COLOR, 0.75);
     for (const effect of this.state.windEffects) {
+      const alpha = 0.75 * getTransientEffectAlpha(
+        effect.remainingSeconds,
+        GAME_CONFIG.powers.windEffectSeconds,
+      );
+      graphics.lineStyle(4, WIND_EFFECT_COLOR, alpha);
       if (effect.topHalfWidth === undefined) graphics.lineBetween(effect.x, effect.y1, effect.x, effect.y2);
       else {
         graphics.lineBetween(effect.x - effect.topHalfWidth, effect.y1, effect.x + effect.topHalfWidth, effect.y1);
         graphics.lineBetween(effect.x - effect.topHalfWidth, effect.y1, effect.x, effect.y2);
         graphics.lineBetween(effect.x + effect.topHalfWidth, effect.y1, effect.x, effect.y2);
       }
+    }
+    const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
+    const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
+    for (const effect of this.state.iceShatterEffects) {
+      const alpha = getTransientEffectAlpha(
+        effect.remainingSeconds,
+        GAME_CONFIG.powers.iceShatterEffectSeconds,
+      );
+      graphics.lineStyle(3, GAME_CONFIG.rendering.iceShatterColor, alpha);
+      graphics.strokeEllipse(effect.x, effect.y, horizontalPitch * 2, verticalPitch * 2);
     }
     this.drawDangerBricks(field.top);
     const paddle = this.state.paddle;
@@ -549,20 +581,54 @@ export class GameScene extends Phaser.Scene {
     graphics.fillRoundedRect(brick.x + offset, brick.y, brick.width, brick.height, 3);
   }
 
+  private drawBrick(
+    graphics: Phaser.GameObjects.Graphics,
+    brick: GameState['brickField']['columns'][number][number],
+    color: number,
+    fieldTop: number,
+  ): void {
+    const pendingFreeze = isPendingFreezeBrick(brick);
+    const frozen = isFrozenBrick(brick);
+    graphics.fillStyle(color);
+    if (brick.y < fieldTop) {
+      const visibleHeight = brick.y + brick.height - fieldTop;
+      if (visibleHeight > 0) {
+        graphics.fillRect(brick.x, fieldTop, brick.width, visibleHeight);
+        if (pendingFreeze || frozen) {
+          graphics.lineStyle(
+            pendingFreeze ? 2 : 3,
+            GAME_CONFIG.rendering.frozenBrickOutlineColor,
+            pendingFreeze ? GAME_CONFIG.rendering.pendingFrozenBrickOutlineAlpha : 1,
+          );
+          const visibleBottom = brick.y + brick.height;
+          graphics.lineBetween(brick.x, fieldTop, brick.x, visibleBottom);
+          graphics.lineBetween(brick.x + brick.width, fieldTop, brick.x + brick.width, visibleBottom);
+          graphics.lineBetween(brick.x, visibleBottom, brick.x + brick.width, visibleBottom);
+        }
+      }
+      return;
+    }
+    graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+    if (pendingFreeze || frozen) {
+      graphics.lineStyle(
+        pendingFreeze ? 2 : 3,
+        GAME_CONFIG.rendering.frozenBrickOutlineColor,
+        pendingFreeze ? GAME_CONFIG.rendering.pendingFrozenBrickOutlineAlpha : 1,
+      );
+      graphics.strokeRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+    }
+  }
+
   private drawDangerBricks(fieldTop: number): void {
     const graphics = this.dangerGraphics;
     for (const column of this.state.brickField.columns) {
       for (const brick of column) {
         if (!isDangerBrick(brick)) continue;
-        const color = GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
+        const color = isFrozenBrick(brick)
+          ? GAME_CONFIG.rendering.frozenBrickFillColor
+          : GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
         this.drawDangerBrickEffects(graphics, brick, color);
-        graphics.fillStyle(color);
-        if (brick.y < fieldTop) {
-          const visibleHeight = brick.y + brick.height - fieldTop;
-          if (visibleHeight > 0) graphics.fillRect(brick.x, fieldTop, brick.width, visibleHeight);
-        } else {
-          graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
-        }
+        this.drawBrick(graphics, brick, color, fieldTop);
       }
     }
   }

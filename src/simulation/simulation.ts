@@ -6,11 +6,22 @@ import {
   recordBallPaddleContact,
 } from './brickPressureAssist';
 import {
-  applyBrickDamage,
   isBallKill,
   type BrickDestruction,
 } from './combat';
+import { applyRoutedBrickDamage } from './destructionRouting';
 import { spawnSplitBalls, type BallState, type GameState } from './gameState';
+import { createElectricVisualAmplitude } from './electricVisual';
+import {
+  advanceFrozenBrickSafety,
+  commitPendingFreeze,
+  freezeBrick,
+  handleFrozenBrickContact,
+  isFreezeSafetyContact,
+  isFrozenBrick,
+  isPendingFreezeBrick,
+  isPendingFreezeSafetyContact,
+} from './iceBall';
 import { rankElectricTargets, selectMissileTarget, selectWindTargets } from './powerTargeting';
 import { getPaddleBounceElevationDegrees } from './paddleBounce';
 import { getPowerLevel } from './powers';
@@ -114,7 +125,19 @@ function findBrickById(state: GameState, id: string): BrickState | undefined {
   return undefined;
 }
 
-function triggerElectric(state: GameState, destruction: BrickDestruction): void {
+type BallElementalProcKind = 'BALL_DESTRUCTION' | 'INITIAL_ICE_FREEZE' | 'DIRECT_BALL_ICE_SHATTER';
+
+interface BallElementalProcEvent {
+  kind: BallElementalProcKind;
+  origin: BrickDestruction;
+  originBrickId?: string;
+}
+
+function triggerElectric(
+  state: GameState,
+  destruction: BrickDestruction,
+  excludedBrickIds?: ReadonlySet<string>,
+): void {
   const level = getPowerLevel(state.powers, 'ELECTRIC_BALL');
   if (level === 0) return;
   const sourceX = destruction.x + destruction.width / 2;
@@ -122,21 +145,35 @@ function triggerElectric(state: GameState, destruction: BrickDestruction): void 
   const bricks: BrickState[] = [];
   for (const column of state.brickField.columns) bricks.push(...column);
   const targetCount = GAME_CONFIG.powers.electricPrimaryTargetsByLevel[level - 1];
-  const targets = rankElectricTargets(destruction, bricks).slice(0, targetCount).map(({ brick }) => brick);
+  const targets = rankElectricTargets(destruction, bricks, excludedBrickIds)
+    .slice(0, targetCount)
+    .map(({ brick }) => brick);
   const proc = level === GAME_CONFIG.powers.maxLevel && targets.length > 0
     ? {
       id: state.nextElectricProcId++,
       primaryTargetIds: new Set(targets.map(({ id }) => id)),
       secondaryTargetIds: new Set<string>(),
+      excludedTargetIds: excludedBrickIds ? new Set(excludedBrickIds) : undefined,
       activeProjectileCount: targets.length,
     }
     : undefined;
   if (proc) state.electricProcs.push(proc);
   for (const brick of targets) {
+    const projectileId = state.nextProjectileId++;
+    const targetX = brick.x + brick.width / 2;
+    const targetY = brick.y + brick.height / 2;
+    const initialDistance = Math.hypot(targetX - sourceX, targetY - sourceY);
     state.projectiles.push({
-      id: state.nextProjectileId++, kind: 'ELECTRIC', x: sourceX, y: sourceY,
-      velocity: { x: 0, y: 0 }, damage: 1, targetBrickId: brick.id,
+      id: projectileId, kind: 'ELECTRIC', x: sourceX, y: sourceY,
+      velocity: {
+        x: initialDistance > 0 ? (targetX - sourceX) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
+        y: initialDistance > 0 ? (targetY - sourceY) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
+      },
+      damage: 1, targetBrickId: brick.id,
       electricProcId: proc?.id, electricGeneration: proc ? 'PRIMARY' : undefined,
+      electricFlightProgress: 0,
+      electricInitialDistance: initialDistance,
+      electricVisualAmplitude: createElectricVisualAmplitude(projectileId, brick.id),
     });
   }
 }
@@ -149,11 +186,17 @@ function setPaddleBounceDirection(ball: BallState, elevationDegrees: number, hor
   ball.velocity.y = -speed * Math.sin(elevationRadians);
 }
 
-function triggerWind(state: GameState, destruction: BrickDestruction): void {
+function triggerWind(
+  state: GameState,
+  destruction: BrickDestruction,
+  excludedBrickIds?: ReadonlySet<string>,
+): void {
   const level = getPowerLevel(state.powers, 'WIND_BALL');
   if (level === 0) return;
   const bricks: BrickState[] = [];
-  for (const column of state.brickField.columns) bricks.push(...column);
+  for (const column of state.brickField.columns) {
+    for (const brick of column) if (!excludedBrickIds?.has(brick.id)) bricks.push(brick);
+  }
   const targets = selectWindTargets(level, destruction, bricks);
   const sourceCenterX = destruction.x + destruction.width / 2;
   const sourceCenterY = destruction.y + destruction.height / 2;
@@ -171,10 +214,14 @@ function triggerWind(state: GameState, destruction: BrickDestruction): void {
       : undefined,
     remainingSeconds: GAME_CONFIG.powers.windEffectSeconds,
   });
-  for (const brick of targets) applyBrickDamage(state, brick, 1, 'WIND');
+  for (const brick of targets) applyRoutedBrickDamage(state, brick, 1, 'WIND');
 }
 
-function triggerFire(state: GameState, destruction: BrickDestruction): void {
+function triggerFire(
+  state: GameState,
+  destruction: BrickDestruction,
+  excludedBrickIds?: ReadonlySet<string>,
+): void {
   const level = getPowerLevel(state.powers, 'FIRE_BALL');
   if (level === 0) return;
   const sourceCenterX = destruction.x + destruction.width / 2;
@@ -186,6 +233,7 @@ function triggerFire(state: GameState, destruction: BrickDestruction): void {
   const targets: BrickState[] = [];
   for (const column of state.brickField.columns) {
     for (const brick of column) {
+      if (excludedBrickIds?.has(brick.id)) continue;
       const verticallyIntersects = level === GAME_CONFIG.powers.maxLevel
         ? Math.abs(brick.y + brick.height / 2 - sourceCenterY) <= verticalPitch + GAME_CONFIG.bricks.verticalEdgeGap / 2
         : brick.y <= destruction.y + destruction.height && brick.y + brick.height >= destruction.y;
@@ -202,14 +250,31 @@ function triggerFire(state: GameState, destruction: BrickDestruction): void {
       : undefined,
     remainingSeconds: GAME_CONFIG.powers.fireEffectSeconds,
   });
-  for (const brick of targets) applyBrickDamage(state, brick, 1, 'FIRE');
+  for (const brick of targets) applyRoutedBrickDamage(state, brick, 1, 'FIRE');
+}
+
+function triggerBallElementalProc(state: GameState, event: BallElementalProcEvent): void {
+  const excludedBrickIds = event.originBrickId ? new Set([event.originBrickId]) : undefined;
+  triggerElectric(state, event.origin, excludedBrickIds);
+  triggerFire(state, event.origin, excludedBrickIds);
+  triggerWind(state, event.origin, excludedBrickIds);
 }
 
 function handleBallKill(state: GameState, destruction: BrickDestruction | null): void {
   if (!isBallKill(destruction)) return;
-  triggerElectric(state, destruction);
-  triggerFire(state, destruction);
-  triggerWind(state, destruction);
+  triggerBallElementalProc(state, { kind: 'BALL_DESTRUCTION', origin: destruction });
+}
+
+function triggerIceBallElementalProc(
+  state: GameState,
+  brick: Pick<BrickState, 'id' | 'x' | 'y' | 'width' | 'height'>,
+  kind: 'INITIAL_ICE_FREEZE' | 'DIRECT_BALL_ICE_SHATTER',
+): void {
+  triggerBallElementalProc(state, {
+    kind,
+    originBrickId: brick.id,
+    origin: { source: 'BALL', x: brick.x, y: brick.y, width: brick.width, height: brick.height },
+  });
 }
 
 function spawnGunVolley(state: GameState): void {
@@ -321,6 +386,7 @@ function launchSecondaryElectric(
   for (const column of state.brickField.columns) candidates.push(...column);
   const excludedTargetIds = new Set(proc.primaryTargetIds);
   for (const id of proc.secondaryTargetIds) excludedTargetIds.add(id);
+  for (const id of proc.excludedTargetIds ?? []) excludedTargetIds.add(id);
   const target = rankElectricTargets(
     { source: 'ELECTRIC', ...origin },
     candidates,
@@ -329,16 +395,28 @@ function launchSecondaryElectric(
   if (!target) return;
   proc.secondaryTargetIds.add(target.id);
   proc.activeProjectileCount += 1;
+  const projectileId = state.nextProjectileId++;
+  const sourceX = origin.x + origin.width / 2;
+  const sourceY = origin.y + origin.height / 2;
+  const targetX = target.x + target.width / 2;
+  const targetY = target.y + target.height / 2;
+  const initialDistance = Math.hypot(targetX - sourceX, targetY - sourceY);
   state.projectiles.push({
-    id: state.nextProjectileId++,
+    id: projectileId,
     kind: 'ELECTRIC',
-    x: origin.x + origin.width / 2,
-    y: origin.y + origin.height / 2,
-    velocity: { x: 0, y: 0 },
+    x: sourceX,
+    y: sourceY,
+    velocity: {
+      x: initialDistance > 0 ? (targetX - sourceX) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
+      y: initialDistance > 0 ? (targetY - sourceY) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
+    },
     damage: 1,
     targetBrickId: target.id,
     electricProcId: proc.id,
     electricGeneration: 'SECONDARY',
+    electricFlightProgress: 0,
+    electricInitialDistance: initialDistance,
+    electricVisualAmplitude: createElectricVisualAmplitude(projectileId, target.id),
   });
 }
 
@@ -445,7 +523,7 @@ function updateMissile(state: GameState, projectile: GameState['projectiles'][nu
     state, previousX, previousY, projectile.x, projectile.y, GAME_CONFIG.powers.missileCollisionRadius,
   );
   if (hit) {
-    applyBrickDamage(state, hit, projectile.damage, 'MISSILE');
+    applyRoutedBrickDamage(state, hit, projectile.damage, 'MISSILE');
     return true;
   }
   return projectile.y + GAME_CONFIG.powers.missileCollisionRadius < GAME_CONFIG.playfield.top;
@@ -473,7 +551,7 @@ function updateProjectiles(state: GameState, deltaSeconds: number): void {
       const travel = GAME_CONFIG.powers.projectileSpeed * deltaSeconds;
       if (distance <= travel) {
         const impactOrigin = { x: target.x, y: target.y, width: target.width, height: target.height };
-        applyBrickDamage(state, target, projectile.damage, 'ELECTRIC');
+        applyRoutedBrickDamage(state, target, projectile.damage, 'ELECTRIC');
         if (projectile.electricGeneration === 'PRIMARY') {
           launchSecondaryElectric(state, projectile.electricProcId, impactOrigin);
         }
@@ -484,6 +562,11 @@ function updateProjectiles(state: GameState, deltaSeconds: number): void {
         projectile.velocity.y = dy / distance * GAME_CONFIG.powers.projectileSpeed;
         projectile.x += projectile.velocity.x * deltaSeconds;
         projectile.y += projectile.velocity.y * deltaSeconds;
+        projectile.electricFlightProgress = Math.min(
+          1,
+          (projectile.electricFlightProgress ?? 0)
+            + travel / Math.max(1, projectile.electricInitialDistance ?? distance),
+        );
       }
       continue;
     }
@@ -499,7 +582,7 @@ function updateProjectiles(state: GameState, deltaSeconds: number): void {
       }
     }
     if (hit) {
-      applyBrickDamage(state, hit, projectile.damage, 'GUN');
+      applyRoutedBrickDamage(state, hit, projectile.damage, 'GUN');
       state.projectiles.splice(index, 1);
     } else if (projectile.y < GAME_CONFIG.playfield.top) {
       state.projectiles.splice(index, 1);
@@ -518,6 +601,13 @@ function updateWindEffects(state: GameState, deltaSeconds: number): void {
   for (let index = state.windEffects.length - 1; index >= 0; index -= 1) {
     state.windEffects[index].remainingSeconds -= deltaSeconds;
     if (state.windEffects[index].remainingSeconds <= 0) state.windEffects.splice(index, 1);
+  }
+}
+
+function updateIceShatterEffects(state: GameState, deltaSeconds: number): void {
+  for (let index = state.iceShatterEffects.length - 1; index >= 0; index -= 1) {
+    state.iceShatterEffects[index].remainingSeconds -= deltaSeconds;
+    if (state.iceShatterEffects[index].remainingSeconds <= 0) state.iceShatterEffects.splice(index, 1);
   }
 }
 
@@ -619,14 +709,49 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
       const canPierceThrough = collisionResolution.face !== 'TOP'
         && ball.pierceCharge >= brickHp
         && ball.pierceCharge > 0;
-      if (canPierceThrough) {
+      const iceOwned = getPowerLevel(state.powers, 'ICE_BALL') > 0;
+      if (isFrozenBrick(brick)) {
+        if (isFreezeSafetyContact(brick, ball.id)) {
+          collided = true;
+          break;
+        }
+        const shatterOrigin = { id: brick.id, x: brick.x, y: brick.y, width: brick.width, height: brick.height };
+        if (applyRoutedBrickDamage(state, brick, 1, 'BALL').frozenShattered) {
+          triggerIceBallElementalProc(state, shatterOrigin, 'DIRECT_BALL_ICE_SHATTER');
+        }
+        if (canPierceThrough) ball.pierceCharge -= brickHp;
+        else {
+          ball.pierceCharge = 0;
+          bounceFromBrickFace(ball, brick, collisionResolution);
+          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        }
+      } else if (isPendingFreezeBrick(brick)) {
+        if (isPendingFreezeSafetyContact(brick, ball.id)) {
+          collided = true;
+          break;
+        }
+        if (canPierceThrough) ball.pierceCharge -= brickHp;
+        else {
+          ball.pierceCharge = 0;
+          bounceFromBrickFace(ball, brick, collisionResolution);
+          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        }
+      } else if (iceOwned) {
+        if (freezeBrick(brick, ball.id)) triggerIceBallElementalProc(state, brick, 'INITIAL_ICE_FREEZE');
+        if (canPierceThrough) ball.pierceCharge -= brickHp;
+        else {
+          ball.pierceCharge = 0;
+          bounceFromBrickFace(ball, brick, collisionResolution);
+          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        }
+      } else if (canPierceThrough) {
         ball.pierceCharge -= brickHp;
-        handleBallKill(state, applyBrickDamage(state, brick, brickHp, 'BALL'));
+        handleBallKill(state, applyRoutedBrickDamage(state, brick, brickHp, 'BALL').destruction);
       } else {
         const pierceDamage = Math.min(ball.pierceCharge, Math.max(0, brickHp - 1));
         ball.pierceCharge = 0;
         bounceFromBrickFace(ball, brick, collisionResolution);
-        handleBallKill(state, applyBrickDamage(state, brick, 1 + pierceDamage, 'BALL'));
+        handleBallKill(state, applyRoutedBrickDamage(state, brick, 1 + pierceDamage, 'BALL').destruction);
         ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
       }
       collided = true;
@@ -674,6 +799,10 @@ export function stepSimulation(
     worldDeltaSeconds,
     getBrickDensityDifficultyLevel(state.survivalTimeSeconds),
     effectiveBrickSpeedLevel,
+    {
+      onFrozenBrickContact: (contact) => handleFrozenBrickContact(state, contact),
+      onPendingFreezeReady: (brick) => commitPendingFreeze(brick),
+    },
   )) {
     return SimulationStepOutcome.BrickOverflow;
   }
@@ -683,6 +812,7 @@ export function stepSimulation(
   updateProjectiles(state, worldDeltaSeconds);
   updateFireEffects(state, worldDeltaSeconds);
   updateWindEffects(state, worldDeltaSeconds);
+  updateIceShatterEffects(state, worldDeltaSeconds);
   const targetBallSpeed = getBallTargetSpeed(
     state.balls.length,
     state.brickPressureAssist.trappedBallSpeedBoost,
@@ -691,5 +821,6 @@ export function stepSimulation(
     updateBallSpeedAssist(state.balls[index], targetBallSpeed, worldDeltaSeconds);
     if (updateBall(state, state.balls[index], worldDeltaSeconds)) state.balls.splice(index, 1);
   }
+  advanceFrozenBrickSafety(state, worldDeltaSeconds);
   return state.balls.length === 0 ? SimulationStepOutcome.FinalBallLost : SimulationStepOutcome.None;
 }

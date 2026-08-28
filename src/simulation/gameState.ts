@@ -34,15 +34,20 @@ export interface ProjectileState extends Vector2 {
   homingSpeed?: number;
   electricProcId?: number;
   electricGeneration?: 'PRIMARY' | 'SECONDARY';
+  electricFlightProgress?: number;
+  electricInitialDistance?: number;
+  electricVisualAmplitude?: number;
 }
 export interface ElectricProcState {
   id: number;
   primaryTargetIds: Set<string>;
   secondaryTargetIds: Set<string>;
+  excludedTargetIds?: Set<string>;
   activeProjectileCount: number;
 }
 export interface FireEffectState { x1: number; x2: number; y: number; additionalYs?: number[]; remainingSeconds: number }
 export interface WindEffectState { x: number; y1: number; y2: number; topHalfWidth?: number; remainingSeconds: number }
+export interface IceShatterEffectState { x: number; y: number; remainingSeconds: number }
 export interface GameState {
   paddle: PaddleState;
   balls: BallState[];
@@ -54,6 +59,7 @@ export interface GameState {
   projectiles: ProjectileState[];
   fireEffects: FireEffectState[];
   windEffects: WindEffectState[];
+  iceShatterEffects: IceShatterEffectState[];
   nextProjectileId: number;
   electricProcs: ElectricProcState[];
   nextElectricProcId: number;
@@ -89,6 +95,7 @@ export function createInitialGameState(): GameState {
     projectiles: [],
     fireEffects: [],
     windEffects: [],
+    iceShatterEffects: [],
     nextProjectileId: 1,
     electricProcs: [],
     nextElectricProcId: 1,

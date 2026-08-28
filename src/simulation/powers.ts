@@ -3,7 +3,7 @@ import { spawnBallsFromParent } from './ballSpawning';
 import type { GameState } from './gameState';
 
 export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE'
-  | 'ELECTRIC_BALL' | 'FIRE_BALL' | 'WIND_BALL' | 'HOMING_MISSILE';
+  | 'ELECTRIC_BALL' | 'FIRE_BALL' | 'WIND_BALL' | 'HOMING_MISSILE' | 'ICE_BALL';
 
 export interface PowerDefinition {
   id: PowerId;
@@ -78,6 +78,14 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
     describeCurrent: (level) => level === 5
       ? 'Rapidly launches 5 missiles that hunt the lowest bricks.'
       : `Launches ${level} missile${level === 1 ? '' : 's'} that hunt the lowest brick${level === 1 ? '' : 's'}.`,
+  },
+  {
+    id: 'ICE_BALL', name: 'ICE BALL', enabledInOfferPool: true,
+    describeCurrent: (level) => level === GAME_CONFIG.powers.maxLevel
+      ? 'Frozen bricks destroy 5 incoming bricks. Shatters chain through other frozen bricks.'
+      : level === 1
+        ? 'Freezes Ball-hit bricks. They destroy 1 incoming brick, then shatter nearby bricks.'
+        : `Frozen bricks destroy ${level} incoming bricks before shattering.`,
   },
 ] as const;
 

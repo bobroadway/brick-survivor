@@ -22,6 +22,20 @@ export interface BrickState {
   hp: number;
   xpValue: number;
   kind: BrickKind;
+  /** Ice ownership state; pending bricks keep descending until entry geometry permits stopping. */
+  iceState?: 'PENDING_FREEZE' | 'FROZEN';
+  /** Ball responsible for a pending freeze, retained for same-contact safety on commit. */
+  icePendingFreezeBallId?: number;
+  /** True only while the creating Ball's original traversal still overlaps this brick. */
+  icePendingFreezeContactActive?: boolean;
+  /** Present only while frozen; its value is the number of incoming bricks destroyed. */
+  iceCollisionKills?: number;
+  /** The Ball whose creation contact must clear before direct hits may shatter this brick. */
+  iceFreezeSafetyBallId?: number;
+  /** Active world time elapsed since this brick was frozen. */
+  iceFreezeSafetyElapsedSeconds?: number;
+  /** Suppresses direct shatter only until the creating Ball clears or the safety ceiling expires. */
+  iceFreezeSafetyActive?: boolean;
 }
 
 export interface BrickFieldState {
@@ -30,6 +44,16 @@ export interface BrickFieldState {
   generatorState: number;
   speedClassGeneratorState: number;
   nextRowId: number;
+}
+
+export interface FrozenBrickContact {
+  frozenBrick: BrickState;
+  incomingBrick: BrickState;
+}
+
+export interface BrickFieldCallbacks {
+  onFrozenBrickContact?: (contact: FrozenBrickContact) => void;
+  onPendingFreezeReady?: (brick: BrickState) => void;
 }
 
 function nextRandom(field: BrickFieldState): number {
@@ -124,6 +148,19 @@ export function getBrickSpawnY(): number {
   return GAME_CONFIG.bricks.fieldTopY - getBrickRowPitch();
 }
 
+/** Earliest top-edge Y where a stationary brick leaves one legal spawn row above it. */
+export function getEarliestStationaryBrickY(): number {
+  const formationSpawnBounds = {
+    y: getBrickSpawnY(),
+    height: GAME_CONFIG.bricks.brickHeight,
+  };
+  return getBrickBottom(formationSpawnBounds) + getMinimumBrickVerticalEdgeGap();
+}
+
+export function hasClearedFormationEntryCorridor(brick: Pick<BrickState, 'y' | 'height'>): boolean {
+  return getBrickTop(brick) + 1e-9 >= getEarliestStationaryBrickY();
+}
+
 export function getFormationEntryClearance(field: BrickFieldState): number {
   let topmostBrickTop = Number.POSITIVE_INFINITY;
   for (const column of field.columns) {
@@ -167,23 +204,42 @@ export function advanceBrickField(
   deltaSeconds: number,
   densityLevel: number = GAME_CONFIG.progression.startingLevel,
   speedLevel: number = densityLevel,
+  callbacks: BrickFieldCallbacks | ((contact: FrozenBrickContact) => void) = {},
 ): boolean {
+  const resolvedCallbacks: BrickFieldCallbacks = typeof callbacks === 'function'
+    ? { onFrozenBrickContact: callbacks }
+    : callbacks;
+  const frozenContacts: FrozenBrickContact[] = [];
   for (const column of field.columns) {
     for (let index = column.length - 1; index >= 0; index -= 1) {
       const brick = column[index];
+      if (brick.iceCollisionKills !== undefined) continue;
       const descentSpeed = resolveBrickDescentSpeed(brick.speedClass, speedLevel);
       let nextY = brick.y + descentSpeed * deltaSeconds;
       const brickBelow = column[index + 1];
       if (brickBelow) {
         const closestLegalY = getMinimumUpperBrickY(brickBelow, brick.height);
+        if (brickBelow.iceCollisionKills !== undefined && nextY + 1e-9 >= closestLegalY) {
+          column.splice(index, 1);
+          frozenContacts.push({ frozenBrick: brickBelow, incomingBrick: brick });
+          continue;
+        }
         // A newly spawned formation keeps its authoritative entry Y if the
         // spawn area is temporarily tight; blocking must never move it upward
         // or pack it against a lower brick at insertion time.
         nextY = closestLegalY < brick.y ? brick.y : Math.min(nextY, closestLegalY);
       }
+      if (brick.iceState === 'PENDING_FREEZE') {
+        nextY = Math.min(nextY, getEarliestStationaryBrickY());
+      }
       brick.y = nextY;
+      if (brick.iceState === 'PENDING_FREEZE' && hasClearedFormationEntryCorridor(brick)) {
+        resolvedCallbacks.onPendingFreezeReady?.(brick);
+      }
     }
   }
+
+  for (const contact of frozenContacts) resolvedCallbacks.onFrozenBrickContact?.(contact);
 
   for (const column of field.columns) {
     for (const brick of column) {

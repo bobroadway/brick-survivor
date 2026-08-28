@@ -1,7 +1,8 @@
 import { GAME_CONFIG } from '../src/simulation/config';
 import { applyBrickDamage, isBallKill, type BrickDestruction, type DamageSource } from '../src/simulation/combat';
 import type { BrickState } from '../src/simulation/brickField';
-import { createInitialGameState, prepareSingleBall } from '../src/simulation/gameState';
+import { createInitialGameState, prepareSingleBall, type ProjectileState } from '../src/simulation/gameState';
+import { createElectricVisualAmplitude, getElectricProjectileVisual } from '../src/simulation/electricVisual';
 import {
   acquirePower,
   banPowerChoice,
@@ -22,6 +23,7 @@ import {
 import { resolveBrickDescentSpeed, type BrickSpeedClass } from '../src/simulation/difficulty';
 import { getBallTargetSpeed, stepSimulation } from '../src/simulation/simulation';
 import { getPaddleBounceElevationDegrees } from '../src/simulation/paddleBounce';
+import { getTransientEffectAlpha } from '../src/simulation/transientEffect';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -208,6 +210,47 @@ function testElectricLimitedAndDeadSecondaryTargets(): void {
   assert(targetHistory.length <= 5, 'secondary Electric hits created a tertiary chain');
 }
 
+function testElectricVisualPath(): void {
+  const amplitude = createElectricVisualAmplitude(17, 'visual-target');
+  assert(amplitude === createElectricVisualAmplitude(17, 'visual-target'), 'Electric visual variation was not deterministic');
+  assert(Math.abs(amplitude) <= GAME_CONFIG.powers.electricVisualMaximumOffset, 'Electric curve exceeded its configured offset');
+  const projectile: ProjectileState = {
+    id: 17,
+    kind: 'ELECTRIC',
+    x: 400,
+    y: 300,
+    velocity: { x: 720, y: 0 },
+    damage: 1,
+    targetBrickId: 'visual-target',
+    electricInitialDistance: 200,
+    electricVisualAmplitude: amplitude,
+    electricFlightProgress: 0,
+  };
+  const launch = getElectricProjectileVisual(projectile);
+  projectile.electricFlightProgress = 0.5;
+  const middle = getElectricProjectileVisual(projectile);
+  projectile.electricFlightProgress = 1;
+  const arrival = getElectricProjectileVisual(projectile);
+  assertNear(launch.x, projectile.x, 'Electric launch offset');
+  assertNear(arrival.x, projectile.x, 'Electric arrival offset X');
+  assertNear(arrival.y, projectile.y, 'Electric arrival offset Y');
+  assert(Math.abs(middle.y - projectile.y) <= 5, 'Electric midpoint curve exceeded five pixels');
+  assert(middle.length > launch.length && arrival.length > middle.length, 'Electric streak did not stretch through flight');
+  assertNear(Math.hypot(middle.directionX, middle.directionY), 1, 'Electric tangent normalization');
+}
+
+function testTransientEffectFadeEnvelope(): void {
+  for (const duration of [
+    GAME_CONFIG.powers.fireEffectSeconds,
+    GAME_CONFIG.powers.windEffectSeconds,
+    GAME_CONFIG.powers.iceShatterEffectSeconds,
+  ]) {
+    assertNear(getTransientEffectAlpha(duration, duration), 1, 'transient effect initial alpha');
+    assertNear(getTransientEffectAlpha(duration / 2, duration), 0.5, 'transient effect midpoint alpha');
+    assertNear(getTransientEffectAlpha(0, duration), 0, 'transient effect terminal alpha');
+  }
+}
+
 function createDirectionalProcScenario(power: 'FIRE_BALL' | 'WIND_BALL', level: number) {
   const state = createInitialGameState();
   state.brickField.columns.forEach((column) => column.splice(0));
@@ -346,7 +389,7 @@ function acquireToMax(state: ReturnType<typeof createInitialGameState>, id: Powe
 function testOffersAndMaxPairs(): void {
   const powers = createRunPowerState();
   const eligible = getEligiblePowerIds(powers);
-  assert(eligible.join(',') === 'GUN,PIERCING_BALL,SPLITTING_BALL,PADDLE_SIZE,ELECTRIC_BALL,FIRE_BALL,WIND_BALL,HOMING_MISSILE', 'active offer pool mismatch');
+  assert(eligible.join(',') === 'GUN,PIERCING_BALL,SPLITTING_BALL,PADDLE_SIZE,ELECTRIC_BALL,FIRE_BALL,WIND_BALL,HOMING_MISSILE,ICE_BALL', 'active offer pool mismatch');
   assert(eligible.includes('PADDLE_SIZE'), 'Paddle Size must be offer-eligible');
   const appearances = new Map<PowerId, number>();
   for (let draw = 0; draw < 600; draw += 1) {
@@ -355,7 +398,10 @@ function testOffersAndMaxPairs(): void {
     for (const id of powers.currentChoices) if (id) appearances.set(id, (appearances.get(id) ?? 0) + 1);
     powers.currentChoices = [];
   }
-  for (const id of eligible) assert((appearances.get(id) ?? 0) > 180, `${id} offer frequency unexpectedly low`);
+  const minimumExpectedAppearances = 600 * GAME_CONFIG.powers.offerCount / eligible.length * 0.75;
+  for (const id of eligible) {
+    assert((appearances.get(id) ?? 0) > minimumExpectedAppearances, `${id} offer frequency unexpectedly low`);
+  }
 
   const state = createInitialGameState();
   for (const id of ['GUN', 'FIRE_BALL', 'ELECTRIC_BALL', 'WIND_BALL', 'HOMING_MISSILE'] as PowerId[]) acquireToMax(state, id);
@@ -374,7 +420,7 @@ function testTargetedBanAndRerollResources(): void {
   const initialRerolls = powers.rerollsRemaining;
   assert(banPowerChoice(powers, 'WIND_BALL'), 'targeted ban failed');
   assert(powers.bannedPowerIds.has('WIND_BALL'), 'banned power was not retained');
-  assert(powers.bansRemaining === 0, 'ban resource was not consumed exactly once');
+  assert(powers.bansRemaining === GAME_CONFIG.powers.startingBans - 1, 'ban resource was not consumed exactly once');
   assert(powers.rerollsRemaining === initialRerolls, 'ban consumed a full reroll');
   assert(powers.currentChoices[0] === 'GUN' && powers.currentChoices[1] === 'FIRE_BALL', 'ban regenerated unaffected slots');
   const replacement = powers.currentChoices[2];
@@ -436,7 +482,11 @@ function testBanRunLifetime(): void {
   state.powers.currentChoices = ['GUN', 'FIRE_BALL', 'WIND_BALL'];
   assert(banPowerChoice(state.powers, 'WIND_BALL'), 'run-lifetime ban failed');
   prepareSingleBall(state);
-  assert(state.powers.bannedPowerIds.has('WIND_BALL') && state.powers.bansRemaining === 0, 'life replacement cleared ban state');
+  assert(
+    state.powers.bannedPowerIds.has('WIND_BALL')
+      && state.powers.bansRemaining === GAME_CONFIG.powers.startingBans - 1,
+    'life replacement cleared ban state',
+  );
   state.powers.pendingSelections = 3;
   state.powers.currentChoices = [];
   assert(prepareNextPowerSelection(state.powers), 'queued selection after ban failed');
@@ -893,6 +943,8 @@ testElectricRanking();
 testSecondaryElectricUsesSharedScoring();
 testElectricPrimaryProgressionAndChains();
 testElectricLimitedAndDeadSecondaryTargets();
+testElectricVisualPath();
+testTransientEffectFadeEnvelope();
 testFireWidthsAndVisuals();
 testWindRangesAndVisuals();
 testWindRanking();
