@@ -1,5 +1,11 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG } from '../../simulation/config';
+import {
+  getBrickDangerDepthProgress,
+  getDangerVignetteTarget,
+  isDangerBrick,
+  smoothDangerIntensity,
+} from '../../simulation/dangerPresentation';
 import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
 import {
@@ -41,6 +47,7 @@ import { PowerChoiceOverlay } from '../ui/PowerChoiceOverlay';
 const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f, MISSILE: 0xff8a3d } as const;
 const FIRE_EFFECT_COLOR = 0xef5350;
 const WIND_EFFECT_COLOR = 0x76a982;
+const DANGER_VIGNETTE_TEXTURE_KEY = 'danger-vignette-gradient';
 const HUD_LAYOUT = {
   rowCenterY: GAME_CONFIG.height - 30,
   leftPadding: 52,
@@ -56,6 +63,8 @@ export class GameScene extends Phaser.Scene {
   private gameInput!: GameInput;
   private renderQuality!: RenderQualityManager;
   private graphics!: Phaser.GameObjects.Graphics;
+  private dangerGraphics!: Phaser.GameObjects.Graphics;
+  private dangerVignette!: Phaser.GameObjects.Image;
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
   private readonly levelUpGhosts = new Map<number, Array<{ x: number; y: number }>>();
   private survivalTimerText!: Phaser.GameObjects.Text;
@@ -72,6 +81,8 @@ export class GameScene extends Phaser.Scene {
   private removeDisplayModeListener?: () => void;
   private displayMode: DisplayMode = 'WINDOWED';
   private accumulator = 0;
+  private dangerVignetteIntensity = 0;
+  private dangerEffectElapsedSeconds = 0;
   private readonly simulationInput: SimulationInput = {
     movementAxis: 0,
     mouseDisplacement: 0,
@@ -87,6 +98,8 @@ export class GameScene extends Phaser.Scene {
     this.state = createInitialGameState();
     this.session = createSessionState();
     this.graphics = this.add.graphics().setDepth(0);
+    this.dangerVignette = this.createDangerVignette().setDepth(0.5).setAlpha(0);
+    this.dangerGraphics = this.add.graphics().setDepth(0.75);
     this.renderQuality = new RenderQualityManager(this);
     this.gameInput = new GameInput(
       this,
@@ -186,11 +199,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     const frameSeconds = Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
+    this.dangerEffectElapsedSeconds += frameSeconds;
     const worldTimeScale = this.getWorldTimeScale();
     this.accumulator += frameSeconds;
     const stepCount = Math.floor(this.accumulator / GAME_CONFIG.fixedStepSeconds);
     if (stepCount === 0) {
       this.advanceLevelUpTransition(frameSeconds);
+      this.updateDangerVignette(frameSeconds);
       this.drawGame();
       return;
     }
@@ -225,6 +240,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.advanceLevelUpTransition(frameSeconds);
+    this.updateDangerVignette(frameSeconds);
     this.drawGame();
     this.updateProgressionHud();
     this.updateSurvivalTimerText();
@@ -430,6 +446,7 @@ export class GameScene extends Phaser.Scene {
 
   private drawGame(): void {
     const graphics = this.graphics.clear();
+    this.dangerGraphics.clear();
     const field = GAME_CONFIG.playfield;
     const wall = field.wallThickness;
     graphics.fillStyle(0x39465a);
@@ -439,7 +456,8 @@ export class GameScene extends Phaser.Scene {
 
     for (const column of this.state.brickField.columns) {
       for (const brick of column) {
-        graphics.fillStyle(GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass]);
+        const color = GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
+        graphics.fillStyle(color);
         if (brick.y < field.top) {
           const visibleHeight = brick.y + brick.height - field.top;
           if (visibleHeight > 0) graphics.fillRect(brick.x, field.top, brick.width, visibleHeight);
@@ -474,6 +492,7 @@ export class GameScene extends Phaser.Scene {
         graphics.lineBetween(effect.x + effect.topHalfWidth, effect.y1, effect.x, effect.y2);
       }
     }
+    this.drawDangerBricks(field.top);
     const paddle = this.state.paddle;
     graphics.fillStyle(0x78c6d0);
     graphics.fillRoundedRect(paddle.x - paddle.width / 2, paddle.y - paddle.height / 2, paddle.width, paddle.height, 6);
@@ -491,6 +510,103 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.session.phase === GamePhase.LevelUpSpeedup) this.drawContractingLevelUpGhosts(graphics);
     this.syncBallVisuals();
+  }
+
+  private drawDangerBrickEffects(
+    graphics: Phaser.GameObjects.Graphics,
+    brick: GameState['brickField']['columns'][number][number],
+    color: number,
+  ): void {
+    const progress = getBrickDangerDepthProgress(brick);
+    const rendering = GAME_CONFIG.rendering;
+    const expansion = 1 + rendering.dangerGlowMaximumExpansion * progress;
+    const localIntensity = 0.18 + progress * 0.82;
+    const glowAlpha = rendering.dangerGlowMaximumAlpha * localIntensity;
+    for (let layer = 3; layer >= 1; layer -= 1) {
+      const layerExpansion = expansion * layer / 3;
+      graphics.fillStyle(color, glowAlpha * (4 - layer) / 6);
+      graphics.fillRoundedRect(
+        brick.x - layerExpansion,
+        brick.y - layerExpansion,
+        brick.width + layerExpansion * 2,
+        brick.height + layerExpansion * 2,
+        4 + layer,
+      );
+    }
+
+    let phaseSeed = 0;
+    for (let index = 0; index < brick.id.length; index += 1) phaseSeed += brick.id.charCodeAt(index);
+    const vibration = Math.sin(
+      this.dangerEffectElapsedSeconds * Math.PI * 2 * rendering.dangerAberrationVibrationHz
+        + phaseSeed * 0.37,
+    ) * rendering.dangerAberrationVibrationAmplitude * localIntensity;
+    const offset = 0.35 + rendering.dangerAberrationMaximumOffset * progress + vibration;
+    const aberrationAlpha = rendering.dangerAberrationMaximumAlpha * localIntensity;
+    if (offset <= 0 || aberrationAlpha <= 0) return;
+    graphics.fillStyle(0xff6b72, aberrationAlpha);
+    graphics.fillRoundedRect(brick.x - offset, brick.y, brick.width, brick.height, 3);
+    graphics.fillStyle(0x66d9e8, aberrationAlpha);
+    graphics.fillRoundedRect(brick.x + offset, brick.y, brick.width, brick.height, 3);
+  }
+
+  private drawDangerBricks(fieldTop: number): void {
+    const graphics = this.dangerGraphics;
+    for (const column of this.state.brickField.columns) {
+      for (const brick of column) {
+        if (!isDangerBrick(brick)) continue;
+        const color = GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
+        this.drawDangerBrickEffects(graphics, brick, color);
+        graphics.fillStyle(color);
+        if (brick.y < fieldTop) {
+          const visibleHeight = brick.y + brick.height - fieldTop;
+          if (visibleHeight > 0) graphics.fillRect(brick.x, fieldTop, brick.width, visibleHeight);
+        } else {
+          graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+        }
+      }
+    }
+  }
+
+  private updateDangerVignette(deltaSeconds: number): void {
+    const bricks = this.state.brickField.columns.flat();
+    const target = getDangerVignetteTarget(bricks);
+    this.dangerVignetteIntensity = smoothDangerIntensity(
+      this.dangerVignetteIntensity,
+      target,
+      deltaSeconds,
+    );
+    this.dangerVignette.setAlpha(
+      GAME_CONFIG.rendering.dangerVignetteMaximumAlpha * this.dangerVignetteIntensity,
+    );
+  }
+
+  private createDangerVignette(): Phaser.GameObjects.Image {
+    if (!this.textures.exists(DANGER_VIGNETTE_TEXTURE_KEY)) {
+      const texture = this.textures.createCanvas(
+        DANGER_VIGNETTE_TEXTURE_KEY,
+        GAME_CONFIG.width,
+        GAME_CONFIG.height,
+      );
+      if (!texture) throw new Error('Unable to create danger vignette texture.');
+      const context = texture.context;
+      const field = GAME_CONFIG.playfield;
+      const horizontalFalloff = 210;
+      const verticalFalloff = 150;
+      const gradients = [
+        [context.createLinearGradient(field.left, 0, field.left + horizontalFalloff, 0), field.left, field.top, horizontalFalloff, field.bottom - field.top],
+        [context.createLinearGradient(field.right, 0, field.right - horizontalFalloff, 0), field.right - horizontalFalloff, field.top, horizontalFalloff, field.bottom - field.top],
+        [context.createLinearGradient(0, field.top, 0, field.top + verticalFalloff), field.left, field.top, field.right - field.left, verticalFalloff],
+        [context.createLinearGradient(0, field.bottom, 0, field.bottom - verticalFalloff), field.left, field.bottom - verticalFalloff, field.right - field.left, verticalFalloff],
+      ] as const;
+      for (const [gradient, x, y, width, height] of gradients) {
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        context.fillStyle = gradient;
+        context.fillRect(x, y, width, height);
+      }
+      texture.refresh();
+    }
+    return this.add.image(0, 0, DANGER_VIGNETTE_TEXTURE_KEY).setOrigin(0);
   }
 
   private updateSurvivalTimerText(): void {

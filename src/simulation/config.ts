@@ -46,6 +46,7 @@ export const GAME_CONFIG = {
     horizontalGap: 4,
     verticalEdgeGap: 4,
     fieldTopY: 32,
+    dangerLineY: 520,
     speedClassDistribution: [
       { speedClass: 'SLOW', weight: 60 },
       { speedClass: 'MEDIUM', weight: 25 },
@@ -124,6 +125,15 @@ export const GAME_CONFIG = {
   debug: { enabled: true },
   rendering: {
     renderScale: 1,
+    dangerGlowMaximumExpansion: 6,
+    dangerGlowMaximumAlpha: 0.24,
+    dangerAberrationMaximumOffset: 3,
+    dangerAberrationMaximumAlpha: 0.22,
+    dangerAberrationVibrationAmplitude: 0.75,
+    dangerAberrationVibrationHz: 5,
+    dangerVignetteMinimumIntensity: 0.18,
+    dangerVignetteMaximumAlpha: 0.26,
+    dangerVignetteSmoothingSeconds: 0.25,
     brickSpeedClassColors: {
       SLOW: 0x789b83,
       MEDIUM: 0x7891ad,
