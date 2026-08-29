@@ -47,7 +47,21 @@ export interface ElectricProcState {
 }
 export interface FireEffectState { x1: number; x2: number; y: number; additionalYs?: number[]; remainingSeconds: number }
 export interface WindEffectState { x: number; y1: number; y2: number; topHalfWidth?: number; remainingSeconds: number }
-export interface IceShatterEffectState { x: number; y: number; remainingSeconds: number }
+export interface IceShatterEffectState { x: number; y: number; width?: number; height?: number; remainingSeconds: number }
+export interface BossDeathEffectState {
+  x: number; y: number; width: number; height: number;
+  displayHp: number; displayHpStepTimerSeconds: number; frozen: boolean; remainingSeconds: number;
+}
+export interface BossDirectorState {
+  nextCheckpointIndex: number;
+  armedOpportunities: number;
+  lotteryGeneratorState: number;
+  bossQueued: boolean;
+  bossPreGapGenerated: boolean;
+  bossPreGapRowId?: number;
+  queuedStartColumn?: number;
+  activeBossId?: string;
+}
 export interface GameState {
   paddle: PaddleState;
   balls: BallState[];
@@ -60,6 +74,8 @@ export interface GameState {
   fireEffects: FireEffectState[];
   windEffects: WindEffectState[];
   iceShatterEffects: IceShatterEffectState[];
+  bossDeathEffects: BossDeathEffectState[];
+  bossDirector: BossDirectorState;
   nextProjectileId: number;
   electricProcs: ElectricProcState[];
   nextElectricProcId: number;
@@ -96,6 +112,14 @@ export function createInitialGameState(): GameState {
     fireEffects: [],
     windEffects: [],
     iceShatterEffects: [],
+    bossDeathEffects: [],
+    bossDirector: {
+      nextCheckpointIndex: 0,
+      armedOpportunities: 0,
+      lotteryGeneratorState: GAME_CONFIG.boss.lotterySeed >>> 0,
+      bossQueued: false,
+      bossPreGapGenerated: false,
+    },
     nextProjectileId: 1,
     electricProcs: [],
     nextElectricProcId: 1,

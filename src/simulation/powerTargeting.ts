@@ -28,8 +28,20 @@ export function rankElectricTargets(
   const candidates: ElectricTargetScore[] = [];
   for (const brick of bricks) {
     if (excludedBrickIds?.has(brick.id)) continue;
-    const columnDistance = Math.abs(getCenterX(brick) - sourceCenterX) / horizontalPitch;
-    const rowDistance = Math.abs(getCenterY(brick) - sourceCenterY) / verticalPitch;
+    const sourceMinCenterX = source.x + GAME_CONFIG.bricks.brickWidth / 2;
+    const sourceMaxCenterX = source.x + source.width - GAME_CONFIG.bricks.brickWidth / 2;
+    const targetMinCenterX = brick.x + GAME_CONFIG.bricks.brickWidth / 2;
+    const targetMaxCenterX = brick.x + brick.width - GAME_CONFIG.bricks.brickWidth / 2;
+    const sourceMinCenterY = source.y + GAME_CONFIG.bricks.brickHeight / 2;
+    const sourceMaxCenterY = source.y + source.height - GAME_CONFIG.bricks.brickHeight / 2;
+    const targetMinCenterY = brick.y + GAME_CONFIG.bricks.brickHeight / 2;
+    const targetMaxCenterY = brick.y + brick.height - GAME_CONFIG.bricks.brickHeight / 2;
+    const horizontalDistance = Math.max(0,
+      sourceMinCenterX - targetMaxCenterX, targetMinCenterX - sourceMaxCenterX);
+    const verticalDistance = Math.max(0,
+      sourceMinCenterY - targetMaxCenterY, targetMinCenterY - sourceMaxCenterY);
+    const columnDistance = horizontalDistance / horizontalPitch;
+    const rowDistance = verticalDistance / verticalPitch;
     const tileDistance = columnDistance + rowDistance;
     if (tileDistance > GAME_CONFIG.powers.electricRadiusInBrickPitches) continue;
     const sameColumnUpward = getCenterY(brick) < sourceCenterY
@@ -45,6 +57,7 @@ export function rankElectricTargets(
   }
   const tolerance = GAME_CONFIG.powers.electricLowerTargetTieToleranceTiles;
   candidates.sort((left, right) => {
+    if (left.brick.kind !== right.brick.kind) return left.brick.kind === 'BOSS' ? -1 : 1;
     const scoreDifference = left.effectiveScore - right.effectiveScore;
     if (Math.abs(scoreDifference) > tolerance) return scoreDifference;
     if (left.brick.y !== right.brick.y) return right.brick.y - left.brick.y;
@@ -100,7 +113,7 @@ export function selectMissileTarget(
   let selected: BrickState | undefined;
   const verticalTolerance = GAME_CONFIG.powers.missileVerticalTieTolerance;
   for (const brick of bricks) {
-    if (reservedBrickIds.has(brick.id)) continue;
+    if (brick.kind === 'BOSS' || reservedBrickIds.has(brick.id)) continue;
     if (!selected) {
       selected = brick;
       continue;

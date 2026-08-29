@@ -1,6 +1,7 @@
 import { damageBrick, type BrickState } from './brickField';
 import type { GameState } from './gameState';
 import { awardRunXp } from './progression';
+import { isBossBrick, recordBossDamage, recordBossRemoved, recordOrdinaryBrickDestruction } from './boss';
 
 export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND' | 'MISSILE' | 'ICE';
 
@@ -23,6 +24,7 @@ export function applyBrickDamage(
   damage: number,
   source: DamageSource,
 ): BrickDestruction | null {
+  recordBossDamage(brick);
   const xpAwarded = damageBrick(state.brickField, brick, damage);
   if (xpAwarded <= 0) return null;
   return awardBrickDestruction(state, brick, source);
@@ -31,11 +33,13 @@ export function applyBrickDamage(
 /** Records an already-removed brick exactly once at the caller's authoritative removal point. */
 export function awardBrickDestruction(
   state: GameState,
-  brick: Pick<BrickState, 'x' | 'y' | 'width' | 'height' | 'xpValue'>,
+  brick: BrickState,
   source: DamageSource,
 ): BrickDestruction {
   const xpAwarded = brick.xpValue;
   const rewards = awardRunXp(state.progression, xpAwarded);
   state.powers.pendingSelections += rewards.length;
+  if (isBossBrick(brick)) recordBossRemoved(state, brick);
+  else recordOrdinaryBrickDestruction(state);
   return { source, x: brick.x, y: brick.y, width: brick.width, height: brick.height };
 }

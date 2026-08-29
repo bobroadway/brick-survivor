@@ -66,6 +66,7 @@ export class GameScene extends Phaser.Scene {
   private gameInput!: GameInput;
   private renderQuality!: RenderQualityManager;
   private graphics!: Phaser.GameObjects.Graphics;
+  private wallGraphics!: Phaser.GameObjects.Graphics;
   private dangerGraphics!: Phaser.GameObjects.Graphics;
   private dangerVignette!: Phaser.GameObjects.Image;
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
@@ -73,6 +74,7 @@ export class GameScene extends Phaser.Scene {
   private survivalTimerText!: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
   private progressionText!: Phaser.GameObjects.Text;
+  private bossHpText!: Phaser.GameObjects.Text;
   private xpBarFill!: Phaser.GameObjects.Rectangle;
   private pauseHintText!: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
@@ -100,7 +102,8 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     this.state = createInitialGameState();
     this.session = createSessionState();
-    this.graphics = this.add.graphics().setDepth(0);
+    this.wallGraphics = this.add.graphics().setDepth(0);
+    this.graphics = this.add.graphics().setDepth(0.1);
     this.dangerVignette = this.createDangerVignette().setDepth(0.5).setAlpha(0);
     this.dangerGraphics = this.add.graphics().setDepth(0.75);
     this.renderQuality = new RenderQualityManager(this);
@@ -128,6 +131,21 @@ export class GameScene extends Phaser.Scene {
       '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '14px', fontStyle: 'bold',
     }).setOrigin(1, 0.5).setDepth(10);
+    this.bossHpText = this.renderQuality.addText(0, 0, '', {
+      color: '#221d14', fontFamily: 'Consolas, monospace', fontSize: '22px', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(2).setVisible(false);
+    const clipWidth = GAME_CONFIG.playfield.right - GAME_CONFIG.playfield.left;
+    const clipHeight = GAME_CONFIG.playfield.bottom - GAME_CONFIG.playfield.top;
+    Phaser.Actions.AddMaskShape([this.graphics, this.dangerGraphics, this.bossHpText], {
+      shape: 'rectangle',
+      aspectRatio: clipWidth / clipHeight,
+      region: new Phaser.Geom.Rectangle(
+        GAME_CONFIG.playfield.left,
+        GAME_CONFIG.playfield.top,
+        clipWidth,
+        clipHeight,
+      ),
+    });
     this.add.rectangle(
       HUD_LAYOUT.xpBarCenterX,
       HUD_LAYOUT.rowCenterY,
@@ -452,13 +470,14 @@ export class GameScene extends Phaser.Scene {
 
   private drawGame(): void {
     const graphics = this.graphics.clear();
+    const walls = this.wallGraphics.clear();
     this.dangerGraphics.clear();
     const field = GAME_CONFIG.playfield;
     const wall = field.wallThickness;
-    graphics.fillStyle(0x39465a);
-    graphics.fillRect(field.left - wall, field.top - wall, wall, field.bottom - field.top);
-    graphics.fillRect(field.right, field.top - wall, wall, field.bottom - field.top);
-    graphics.fillRect(field.left - wall, field.top - wall, field.right - field.left + wall * 2, wall);
+    walls.fillStyle(0x39465a);
+    walls.fillRect(field.left - wall, field.top - wall, wall, field.bottom - field.top);
+    walls.fillRect(field.right, field.top - wall, wall, field.bottom - field.top);
+    walls.fillRect(field.left - wall, field.top - wall, field.right - field.left + wall * 2, wall);
 
     for (const column of this.state.brickField.columns) {
       for (const brick of column) {
@@ -466,10 +485,32 @@ export class GameScene extends Phaser.Scene {
           ? GAME_CONFIG.rendering.frozenBrickFillColor
           : isPendingFreezeBrick(brick)
             ? GAME_CONFIG.rendering.pendingFrozenBrickFillColor
-            : GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
+            : brick.kind === 'BOSS'
+              ? GAME_CONFIG.rendering.bossFillColor
+              : GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
         this.drawBrick(graphics, brick, color, field.top);
       }
     }
+    const boss = this.state.brickField.columns.flat().find(({ kind }) => kind === 'BOSS');
+    if (boss && boss.y + boss.height > field.top) {
+      const jolt = (boss.bossHitJoltRemainingSeconds ?? 0) > 0
+        ? Math.sin(this.dangerEffectElapsedSeconds * 90) * 2 : 0;
+      this.bossHpText.setText(String(boss.displayHp ?? boss.hp))
+        .setPosition(boss.x + boss.width / 2 + jolt, boss.y + boss.height / 2)
+        .setVisible(true);
+    } else this.bossHpText.setVisible(false);
+    for (const effect of this.state.bossDeathEffects) {
+      const alpha = Math.max(0, effect.remainingSeconds / GAME_CONFIG.boss.deathEffectSeconds);
+      graphics.fillStyle(effect.frozen ? GAME_CONFIG.rendering.frozenBrickFillColor : GAME_CONFIG.rendering.bossFillColor, alpha * 0.55);
+      graphics.fillRoundedRect(effect.x, effect.y, effect.width, effect.height, 7);
+    }
+    if (!boss && this.state.bossDeathEffects.length > 0) {
+      const effect = this.state.bossDeathEffects[this.state.bossDeathEffects.length - 1];
+      this.bossHpText.setText(String(effect.displayHp))
+        .setPosition(effect.x + effect.width / 2, effect.y + effect.height / 2)
+        .setAlpha(Math.max(0, effect.remainingSeconds / GAME_CONFIG.boss.deathEffectSeconds))
+        .setVisible(true);
+    } else this.bossHpText.setAlpha(1);
     for (const projectile of this.state.projectiles) {
       graphics.lineStyle(3, PROJECTILE_COLORS[projectile.kind], 1);
       if (projectile.kind === 'ELECTRIC') {
@@ -522,7 +563,7 @@ export class GameScene extends Phaser.Scene {
         GAME_CONFIG.powers.iceShatterEffectSeconds,
       );
       graphics.lineStyle(3, GAME_CONFIG.rendering.iceShatterColor, alpha);
-      graphics.strokeEllipse(effect.x, effect.y, horizontalPitch * 2, verticalPitch * 2);
+      graphics.strokeEllipse(effect.x, effect.y, effect.width ?? horizontalPitch * 2, effect.height ?? verticalPitch * 2);
     }
     this.drawDangerBricks(field.top);
     const paddle = this.state.paddle;
@@ -589,33 +630,39 @@ export class GameScene extends Phaser.Scene {
   ): void {
     const pendingFreeze = isPendingFreezeBrick(brick);
     const frozen = isFrozenBrick(brick);
+    const visualX = brick.x + (brick.kind === 'BOSS' && (brick.bossHitJoltRemainingSeconds ?? 0) > 0
+      ? Math.sin(this.dangerEffectElapsedSeconds * 90) * 2
+      : 0);
     graphics.fillStyle(color);
-    if (brick.y < fieldTop) {
-      const visibleHeight = brick.y + brick.height - fieldTop;
-      if (visibleHeight > 0) {
-        graphics.fillRect(brick.x, fieldTop, brick.width, visibleHeight);
-        if (pendingFreeze || frozen) {
-          graphics.lineStyle(
-            pendingFreeze ? 2 : 3,
-            GAME_CONFIG.rendering.frozenBrickOutlineColor,
-            pendingFreeze ? GAME_CONFIG.rendering.pendingFrozenBrickOutlineAlpha : 1,
-          );
-          const visibleBottom = brick.y + brick.height;
-          graphics.lineBetween(brick.x, fieldTop, brick.x, visibleBottom);
-          graphics.lineBetween(brick.x + brick.width, fieldTop, brick.x + brick.width, visibleBottom);
-          graphics.lineBetween(brick.x, visibleBottom, brick.x + brick.width, visibleBottom);
-        }
-      }
-      return;
+    if (brick.y + brick.height <= fieldTop) return;
+    if (brick.kind === 'BOSS' && (brick.bossHitJoltRemainingSeconds ?? 0) > 0) {
+      graphics.fillStyle(0xff6b72, 0.18);
+      graphics.fillRoundedRect(visualX - 2, brick.y, brick.width, brick.height, 7);
+      graphics.fillStyle(0x66d9e8, 0.18);
+      graphics.fillRoundedRect(visualX + 2, brick.y, brick.width, brick.height, 7);
+      graphics.fillStyle(color);
     }
-    graphics.fillRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+    graphics.fillRoundedRect(visualX, brick.y, brick.width, brick.height, brick.kind === 'BOSS' ? 7 : 3);
     if (pendingFreeze || frozen) {
       graphics.lineStyle(
         pendingFreeze ? 2 : 3,
         GAME_CONFIG.rendering.frozenBrickOutlineColor,
         pendingFreeze ? GAME_CONFIG.rendering.pendingFrozenBrickOutlineAlpha : 1,
       );
-      graphics.strokeRoundedRect(brick.x, brick.y, brick.width, brick.height, 3);
+      graphics.strokeRoundedRect(visualX, brick.y, brick.width, brick.height, 3);
+    }
+    if (brick.armored && brick.hp >= GAME_CONFIG.bricks.armoredHp) {
+      const armorInset = 2;
+      graphics.lineStyle(4, GAME_CONFIG.rendering.armoredOutlineColor, 1);
+      graphics.strokeRoundedRect(
+        visualX + armorInset,
+        brick.y + armorInset,
+        brick.width - armorInset * 2,
+        brick.height - armorInset * 2,
+        2,
+      );
+      graphics.lineStyle(2, GAME_CONFIG.rendering.armoredHighlightColor, 0.85);
+      graphics.lineBetween(visualX + 6, brick.y + 5, visualX + brick.width - 6, brick.y + 5);
     }
   }
 
@@ -626,7 +673,9 @@ export class GameScene extends Phaser.Scene {
         if (!isDangerBrick(brick)) continue;
         const color = isFrozenBrick(brick)
           ? GAME_CONFIG.rendering.frozenBrickFillColor
-          : GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
+          : brick.kind === 'BOSS'
+            ? GAME_CONFIG.rendering.bossFillColor
+            : GAME_CONFIG.rendering.brickSpeedClassColors[brick.speedClass];
         this.drawDangerBrickEffects(graphics, brick, color);
         this.drawBrick(graphics, brick, color, fieldTop);
       }

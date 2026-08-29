@@ -19,6 +19,12 @@ export function applyRoutedBrickDamage(
   damage: number,
   source: DamageSource,
 ): RoutedBrickDamageResult {
+  if (isFrozenBrick(brick) && brick.kind === 'BOSS') {
+    const shattered = source === 'BALL'
+      ? tryDirectShatterFrozenBrick(state, brick)
+      : shatterFrozenBrick(state, brick) > 0;
+    return { destruction: null, frozenShattered: shattered };
+  }
   if (!isFrozenBrick(brick) || source === 'ICE') {
     return { destruction: applyBrickDamage(state, brick, damage, source), frozenShattered: false };
   }

@@ -27,6 +27,22 @@ npm run build
 
 The build command creates a Windows ZIP in `release/`. Its executable and supporting files can be extracted and run on a Windows computer without installing Node.js.
 
+## Developer Balance Lab
+
+```sh
+npm run balance
+```
+
+This opens a separate, Phaser-free desktop calculator for examining incoming board HP pressure, Ball and power throughput, and density-dependent build behavior. It loads an editable copy of the current game configuration; edits are temporary and never modify gameplay configuration or save data.
+
+- **MAX DPS** is a practical theoretical ceiling with targets available and efficient legal paths.
+- **MEDIAN DPS** is the 50th percentile from deterministic sampled layouts.
+- **LIKELY DPS** is the arithmetic mean under the selected density and assumptions.
+- **BOARD HP/s** estimates continuous ordinary-brick HP entering the board; Boss pressure is reported separately.
+- **NET PRESSURE** is BOARD HP/s minus player DPS. It is a throughput comparison, not an exact survival prediction.
+
+Monte Carlo calculations use an editable fixed seed and sample count, so identical inputs reproduce identical results. The model is intentionally approximate and is not a replay or frame-by-frame game simulation.
+
 ## Structure
 
 - `src/phaser/` contains Phaser-specific presentation, input, and audio integration.

@@ -45,12 +45,13 @@ ipcMain.handle('desktop:toggle-display-mode', (event) => {
 ipcMain.handle('desktop:quit', () => app.quit());
 
 function createWindow(): void {
+  const balanceLab = process.env.BALANCE_LAB === '1';
   const window = new BrowserWindow({
-    width: 1280,
-    height: 720,
+    width: balanceLab ? 1180 : 1280,
+    height: balanceLab ? 820 : 720,
     useContentSize: true,
-    minWidth: 800,
-    minHeight: 450,
+    minWidth: balanceLab ? 760 : 800,
+    minHeight: balanceLab ? 600 : 450,
     resizable: true,
     maximizable: true,
     backgroundColor: '#10131a',
@@ -61,6 +62,7 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
+  if (balanceLab) window.setTitle('Brick Survivor — Balance Lab');
 
   window.once('ready-to-show', () => window.show());
   window.on('enter-full-screen', () => window.webContents.send('desktop:display-mode-changed', 'FULLSCREEN'));

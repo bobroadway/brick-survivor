@@ -1,5 +1,6 @@
 import { GAME_CONFIG } from './config';
 import { advanceBrickField, type BrickState } from './brickField';
+import { recordBossDamage, recordBossSpawned, updateBossDirector, updateBossPresentation } from './boss';
 import {
   advanceBrickPressureAssist,
   getEffectiveBrickSpeedLevel,
@@ -16,6 +17,7 @@ import {
   advanceFrozenBrickSafety,
   commitPendingFreeze,
   freezeBrick,
+  freezeBossAtZero,
   handleFrozenBrickContact,
   isFreezeSafetyContact,
   isFrozenBrick,
@@ -197,16 +199,24 @@ function triggerWind(
   for (const column of state.brickField.columns) {
     for (const brick of column) if (!excludedBrickIds?.has(brick.id)) bricks.push(brick);
   }
-  const targets = selectWindTargets(level, destruction, bricks);
-  const sourceCenterX = destruction.x + destruction.width / 2;
+  const sourceCount = destruction.width > GAME_CONFIG.bricks.brickWidth
+    ? GAME_CONFIG.boss.widthColumns : 1;
+  const sourcePitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
+  const sources = Array.from({ length: sourceCount }, (_, index) => ({
+    ...destruction,
+    x: destruction.x + index * sourcePitch,
+    width: GAME_CONFIG.bricks.brickWidth,
+  }));
+  const targets = [...new Map(sources.flatMap((source) => selectWindTargets(level, source, bricks))
+    .map((brick) => [brick.id, brick])).values()];
   const sourceCenterY = destruction.y + destruction.height / 2;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
   const rangeSpaces = level === GAME_CONFIG.powers.maxLevel
     ? 7
     : GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
   const range = rangeSpaces * verticalPitch;
-  state.windEffects.push({
-    x: sourceCenterX,
+  for (const source of sources) state.windEffects.push({
+    x: source.x + source.width / 2,
     y1: Math.max(GAME_CONFIG.playfield.top, sourceCenterY - range),
     y2: sourceCenterY,
     topHalfWidth: level === GAME_CONFIG.powers.maxLevel
@@ -224,25 +234,30 @@ function triggerFire(
 ): void {
   const level = getPowerLevel(state.powers, 'FIRE_BALL');
   if (level === 0) return;
-  const sourceCenterX = destruction.x + destruction.width / 2;
   const sourceCenterY = destruction.y + destruction.height / 2;
   const radiusSpaces = GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] ?? 0;
   const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
   const radius = horizontalPitch * radiusSpaces;
+  const sourceLeftCenter = destruction.x + GAME_CONFIG.bricks.brickWidth / 2;
+  const sourceRightCenter = destruction.x + destruction.width - GAME_CONFIG.bricks.brickWidth / 2;
   const targets: BrickState[] = [];
   for (const column of state.brickField.columns) {
     for (const brick of column) {
       if (excludedBrickIds?.has(brick.id)) continue;
+      const sourceHalfHeight = destruction.height / 2;
       const verticallyIntersects = level === GAME_CONFIG.powers.maxLevel
-        ? Math.abs(brick.y + brick.height / 2 - sourceCenterY) <= verticalPitch + GAME_CONFIG.bricks.verticalEdgeGap / 2
+        ? Math.abs(brick.y + brick.height / 2 - sourceCenterY)
+          <= sourceHalfHeight + verticalPitch + GAME_CONFIG.bricks.brickHeight / 2
         : brick.y <= destruction.y + destruction.height && brick.y + brick.height >= destruction.y;
-      const inRange = Math.abs(brick.x + brick.width / 2 - sourceCenterX) <= radius;
+      const targetCenterX = brick.x + brick.width / 2;
+      const inRange = targetCenterX >= sourceLeftCenter - radius
+        && targetCenterX <= sourceRightCenter + radius;
       if (verticallyIntersects && inRange) targets.push(brick);
     }
   }
-  const x1 = Math.max(GAME_CONFIG.playfield.left, sourceCenterX - radius);
-  const x2 = Math.min(GAME_CONFIG.playfield.right, sourceCenterX + radius);
+  const x1 = Math.max(GAME_CONFIG.playfield.left, sourceLeftCenter - radius);
+  const x2 = Math.min(GAME_CONFIG.playfield.right, sourceRightCenter + radius);
   state.fireEffects.push({
     x1, x2, y: sourceCenterY,
     additionalYs: level === GAME_CONFIG.powers.maxLevel
@@ -736,6 +751,30 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
           bounceFromBrickFace(ball, brick, collisionResolution);
           ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
         }
+      } else if (brick.kind === 'BOSS') {
+        const damage = 1 + ball.pierceCharge;
+        ball.pierceCharge = 0;
+        bounceFromBrickFace(ball, brick, collisionResolution);
+        if (iceOwned && damage >= brick.hp) {
+          recordBossDamage(brick);
+          if (freezeBossAtZero(brick, ball.id)) {
+            triggerIceBallElementalProc(state, brick, 'INITIAL_ICE_FREEZE');
+          }
+        } else {
+          handleBallKill(state, applyRoutedBrickDamage(state, brick, damage, 'BALL').destruction);
+        }
+        ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+      } else if (brick.armored && brick.hp > 1) {
+        if (canPierceThrough) {
+          ball.pierceCharge -= brickHp;
+          handleBallKill(state, applyRoutedBrickDamage(state, brick, brickHp, 'BALL').destruction);
+        } else {
+          const pierceDamage = Math.min(ball.pierceCharge, Math.max(0, brickHp - 1));
+          ball.pierceCharge = 0;
+          bounceFromBrickFace(ball, brick, collisionResolution);
+          handleBallKill(state, applyRoutedBrickDamage(state, brick, 1 + pierceDamage, 'BALL').destruction);
+          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        }
       } else if (iceOwned) {
         if (freezeBrick(brick, ball.id)) triggerIceBallElementalProc(state, brick, 'INITIAL_ICE_FREEZE');
         if (canPierceThrough) ball.pierceCharge -= brickHp;
@@ -784,6 +823,8 @@ export function stepSimulation(
     GAME_CONFIG.survival.winTimeSeconds,
     state.survivalTimeSeconds + Math.max(0, worldDeltaSeconds),
   );
+  updateBossDirector(state);
+  updateBossPresentation(state, playerDeltaSeconds);
   if (state.survivalTimeSeconds >= GAME_CONFIG.survival.winTimeSeconds) {
     return SimulationStepOutcome.Win;
   }
@@ -802,6 +843,16 @@ export function stepSimulation(
     {
       onFrozenBrickContact: (contact) => handleFrozenBrickContact(state, contact),
       onPendingFreezeReady: (brick) => commitPendingFreeze(brick),
+      queuedBossStartColumn: state.bossDirector.bossQueued
+        ? state.bossDirector.queuedStartColumn
+        : undefined,
+      onBossSpawned: (boss) => recordBossSpawned(state, boss),
+      bossPreGapGenerated: state.bossDirector.bossPreGapGenerated,
+      bossPreGapRowId: state.bossDirector.bossPreGapRowId,
+      onBossPreGapGenerated: (rowId) => {
+        state.bossDirector.bossPreGapGenerated = true;
+        state.bossDirector.bossPreGapRowId = rowId;
+      },
     },
   )) {
     return SimulationStepOutcome.BrickOverflow;
