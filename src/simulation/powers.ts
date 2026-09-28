@@ -1,6 +1,17 @@
 import { GAME_CONFIG } from './config';
 import { spawnBallsFromParent } from './ballSpawning';
 import type { GameState } from './gameState';
+import {
+  getElectricSpec,
+  getFireSpec,
+  getGunSpec,
+  getIceSpec,
+  getMissileSpec,
+  getPaddleSizeSpec,
+  getPierceSpec,
+  getSplitSpec,
+  getWindSpec,
+} from './gameplayRules';
 
 export type PowerId = 'GUN' | 'PIERCING_BALL' | 'SPLITTING_BALL' | 'PADDLE_SIZE'
   | 'ELECTRIC_BALL' | 'FIRE_BALL' | 'WIND_BALL' | 'HOMING_MISSILE' | 'ICE_BALL';
@@ -37,55 +48,55 @@ export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
   {
     id: 'GUN', name: 'GUN', enabledInOfferPool: true,
     describeCurrent: (level) => level === 1
-      ? 'Dual guns automatically fire upward from the paddle.'
-      : `Fires ${level} volleys before reloading.`,
+      ? `${getGunSpec(level).projectilesPerVolley} guns automatically fire upward from the paddle.`
+      : `Fires ${getGunSpec(level).volleys} volleys before reloading.`,
   },
   {
     id: 'PIERCING_BALL', name: 'PIERCING BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => `Balls can pierce through ${level} brick${level === 1 ? '' : 's'} before needing to bounce and recharge.`,
+    describeCurrent: (level) => `Balls can pierce through ${getPierceSpec(level).capacity} brick${getPierceSpec(level).capacity === 1 ? '' : 's'} before needing to bounce and recharge.`,
   },
   {
     id: 'SPLITTING_BALL', name: 'SPLITTING BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => `Splits a ball every ${GAME_CONFIG.powers.splittingCooldownSecondsByLevel[level - 1]} seconds.`,
+    describeCurrent: (level) => `Adds ${getSplitSpec(level).ballsAddedPerActivation} ball every ${getSplitSpec(level).cooldownSeconds} seconds.`,
     describeSelection: (level) => level === 1
-      ? `Immediately splits once, then every ${GAME_CONFIG.powers.splittingCooldownSecondsByLevel[0]} seconds.`
-      : `Splits a ball every ${GAME_CONFIG.powers.splittingCooldownSecondsByLevel[level - 1]} seconds.`,
+      ? `Immediately adds ${getSplitSpec(level).ballsAddedPerActivation} ball, then every ${getSplitSpec(level).cooldownSeconds} seconds.`
+      : `Adds ${getSplitSpec(level).ballsAddedPerActivation} ball every ${getSplitSpec(level).cooldownSeconds} seconds.`,
   },
   {
     id: 'PADDLE_SIZE', name: 'PADDLE SIZE', enabledInOfferPool: true,
-    describeCurrent: (level) => `${level * 20}% wider. Edge hits reach ${GAME_CONFIG.powers.paddleOuterEdgeElevationDegreesByLevel[level - 1]}°.`,
+    describeCurrent: (level) => `${Math.round((getPaddleSizeSpec(level).widthMultiplier - 1) * 100)}% wider. Edge hits reach ${getPaddleSizeSpec(level).extendedWingMinimumElevationDegrees}°.`,
   },
   {
     id: 'ELECTRIC_BALL', name: 'ELECTRIC BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => level === 5
-      ? 'Zaps 5 nearby bricks, with each zap chaining once.'
-      : `Zaps ${GAME_CONFIG.powers.electricPrimaryTargetsByLevel[level - 1]} nearby bricks.`,
+    describeCurrent: (level) => getElectricSpec(level).secondaryEnabled
+      ? `Zaps ${getElectricSpec(level).primaryTargets} nearby bricks, with each zap chaining once.`
+      : `Zaps ${getElectricSpec(level).primaryTargets} nearby bricks.`,
   },
   {
     id: 'FIRE_BALL', name: 'FIRE BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => level === 5
-      ? 'Blasts a 9-wide area across three rows.'
-      : `Blasts a ${GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] * 2 + 1}-brick-wide horizontal area.`,
+    describeCurrent: (level) => getFireSpec(level).extraRows > 0
+      ? `Blasts a ${getFireSpec(level).horizontalRadiusSpaces * 2 + 1}-wide area across ${getFireSpec(level).extraRows * 2 + 1} rows.`
+      : `Blasts a ${getFireSpec(level).horizontalRadiusSpaces * 2 + 1}-brick-wide horizontal area.`,
   },
   {
     id: 'WIND_BALL', name: 'WIND BALL', enabledInOfferPool: true,
-    describeCurrent: (level) => level === 5
+    describeCurrent: (level) => getWindSpec(level).widening
       ? 'Unleashes a widening tornado above the destroyed brick.'
-      : `Strikes ${GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1]} spaces above.`,
+      : `Strikes ${getWindSpec(level).ordinaryRangeSpaces} spaces above.`,
   },
   {
     id: 'HOMING_MISSILE', name: 'HOMING MISSILE', enabledInOfferPool: true,
-    describeCurrent: (level) => level === 5
-      ? 'Rapidly launches 5 missiles that hunt the lowest bricks.'
-      : `Launches ${level} missile${level === 1 ? '' : 's'} that hunt the lowest brick${level === 1 ? '' : 's'}.`,
+    describeCurrent: (level) => level === GAME_CONFIG.powers.maxLevel
+      ? `Rapidly launches ${getMissileSpec(level).missileCount} missiles that hunt the lowest bricks.`
+      : `Launches ${getMissileSpec(level).missileCount} missile${getMissileSpec(level).missileCount === 1 ? '' : 's'} that hunt the lowest bricks.`,
   },
   {
     id: 'ICE_BALL', name: 'ICE BALL', enabledInOfferPool: true,
     describeCurrent: (level) => level === GAME_CONFIG.powers.maxLevel
-      ? 'Frozen bricks destroy 5 incoming bricks. Shatters chain through other frozen bricks.'
+      ? `Frozen bricks destroy ${getIceSpec(level).collisionCapacity} incoming bricks. Shatters chain through other frozen bricks.`
       : level === 1
-        ? 'Freezes Ball-hit bricks. They destroy 1 incoming brick, then shatter nearby bricks.'
-        : `Frozen bricks destroy ${level} incoming bricks before shattering.`,
+        ? `Freezes Ball-hit bricks. They destroy ${getIceSpec(level).collisionCapacity} incoming brick, then shatter nearby bricks.`
+        : `Frozen bricks destroy ${getIceSpec(level).collisionCapacity} incoming bricks before shattering.`,
   },
 ] as const;
 
@@ -213,25 +224,28 @@ export function acquirePower(state: GameState, id: PowerId): boolean {
   }
 
   if (id === 'PIERCING_BALL') {
-    const increase = newLevel - oldLevel;
-    for (const ball of state.balls) ball.pierceCharge = Math.min(newLevel, ball.pierceCharge + increase);
+    const oldCapacity = getPierceSpec(oldLevel).capacity;
+    const newCapacity = getPierceSpec(newLevel).capacity;
+    const increase = newCapacity - oldCapacity;
+    for (const ball of state.balls) ball.pierceCharge = Math.min(newCapacity, ball.pierceCharge + increase);
   } else if (id === 'PADDLE_SIZE') {
-    state.paddle.width = GAME_CONFIG.paddle.width * (1 + newLevel * 0.2);
+    state.paddle.width = GAME_CONFIG.paddle.width * getPaddleSizeSpec(newLevel).widthMultiplier;
     const minimumX = GAME_CONFIG.playfield.left + state.paddle.width / 2;
     const maximumX = GAME_CONFIG.playfield.right - state.paddle.width / 2;
     state.paddle.x = Math.max(minimumX, Math.min(maximumX, state.paddle.x));
   } else if (id === 'GUN' && oldLevel === 0) {
-    state.powers.gunVolleysRemaining = newLevel;
+    state.powers.gunVolleysRemaining = getGunSpec(newLevel).volleys;
     state.powers.gunShotCooldownSeconds = 0;
   } else if (id === 'SPLITTING_BALL' && oldLevel === 0) {
+    const spec = getSplitSpec(newLevel);
     let oldestBall = state.balls[0];
     for (const ball of state.balls) if (!oldestBall || ball.id < oldestBall.id) oldestBall = ball;
-    if (oldestBall) {
-      spawnBallsFromParent(state, oldestBall, newLevel, getPowerLevel(state.powers, 'PIERCING_BALL'));
+    if (oldestBall && spec.immediateActivationOnAcquire) {
+      spawnBallsFromParent(state, oldestBall, spec.ballsAddedPerActivation, getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity);
     }
     state.powers.splitTimerSeconds = 0;
   } else if (id === 'HOMING_MISSILE' && oldLevel === 0) {
-    state.powers.missilesRemainingInVolley = newLevel;
+    state.powers.missilesRemainingInVolley = getMissileSpec(newLevel).missileCount;
     state.powers.missileLaunchIndex = 0;
     state.powers.missileLaunchCooldownSeconds = 0;
     state.powers.missileReloadSeconds = 0;

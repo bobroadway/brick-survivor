@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from './config';
+import { getPierceSpec } from './gameplayRules';
 import { spawnBallsFromParent } from './ballSpawning';
 import {
   createBrickPressureAssistState,
@@ -34,6 +35,7 @@ export interface ProjectileState extends Vector2 {
   homingSpeed?: number;
   electricProcId?: number;
   electricGeneration?: 'PRIMARY' | 'SECONDARY';
+  electricGenerationDepth?: number;
   electricFlightProgress?: number;
   electricInitialDistance?: number;
   electricVisualAmplitude?: number;
@@ -129,7 +131,7 @@ export function createInitialGameState(): GameState {
 }
 
 export function spawnSplitBalls(state: GameState, parent: BallState, count: number): void {
-  spawnBallsFromParent(state, parent, count, getPowerLevel(state.powers, 'PIERCING_BALL'));
+  spawnBallsFromParent(state, parent, count, getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity);
 }
 
 export function prepareSingleBall(state: GameState): void {
@@ -149,7 +151,7 @@ export function prepareSingleBall(state: GameState): void {
     positionHistory: [],
     historySampleTimer: 0,
     radius: ball.radius,
-    pierceCharge: getPowerLevel(state.powers, 'PIERCING_BALL'),
+    pierceCharge: getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity,
     speedAssistStart: ball.speed,
     speedAssistTarget: ball.speed,
     speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,

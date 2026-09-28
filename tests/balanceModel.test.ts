@@ -8,12 +8,14 @@ import {
   getFireMaximumTargets,
   getGunMaxDps,
   getMissileMaxDps,
+  getModeledBrickSpeedLevel,
   getMultiballSpeedMultiplier,
   getSplitBallCount,
   getWeightedAverageSpeed,
   getWindMaximumTargets,
 } from '../src/balance/model';
 import { GAME_CONFIG } from '../src/simulation/config';
+import { getBrickOccupancyRangeForRules, getVirtualDifficultyLevelForRules } from '../src/simulation/gameplayRules';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -23,7 +25,7 @@ function near(actual: number, expected: number, message: string, tolerance = 1e-
 }
 
 const defaults = createGameDefaultBalanceSettings();
-defaults.monteCarlo.samples = 700;
+defaults.assumptions.monteCarloSamples = 700;
 assert(defaults.ball.speed === GAME_CONFIG.ball.speed, 'Ball speed default drifted from game config');
 assert(defaults.board.columns === GAME_CONFIG.bricks.columns, 'Column default drifted from game config');
 assert(defaults.board.verticalPitch === GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap,
@@ -36,6 +38,16 @@ const middle = cloneBalanceSettings(defaults); middle.timeSeconds = 6 * 60;
 const late = cloneBalanceSettings(defaults); late.timeSeconds = 12 * 60;
 assert(getDerivedDensity(early) < getDerivedDensity(middle), 'Time-driven density did not rise during ramp');
 assert(getDerivedDensity(middle) < getDerivedDensity(late), 'Time-driven density did not reach enrage');
+const middleLevel = getVirtualDifficultyLevelForRules(middle.timeSeconds, {
+  easyEndSeconds: middle.difficulty.easyEndSeconds,
+  rampEndSeconds: middle.difficulty.enrageStartSeconds,
+  winSeconds: middle.difficulty.winSeconds,
+  rampStartLevel: middle.difficulty.rampStartLevel,
+  rampEndLevel: middle.difficulty.rampEndLevel,
+});
+const middleRange = getBrickOccupancyRangeForRules(middleLevel, middle.density);
+near(getDerivedDensity(middle), (middleRange.minimum + middleRange.maximum) / 2,
+  'Balance density was not the expectation of the canonical legal range');
 const earlyReport = calculateBalance(early);
 const lateReport = calculateBalance(late);
 assert(lateReport.weightedAverageSpeed > earlyReport.weightedAverageSpeed, 'Time-driven speed did not rise');
@@ -88,6 +100,17 @@ for (const id of ['ELECTRIC_BALL', 'FIRE_BALL', 'WIND_BALL'] as const) {
 const faster = cloneBalanceSettings(defaults); faster.speed.averageOverride = calculateBalance(defaults).weightedAverageSpeed * 1.5;
 assert(calculateBalance(faster).boardHpPerSecond.likely >= calculateBalance(defaults).boardHpPerSecond.likely,
   'Higher brick speed reduced incoming HP/s');
+
+const assisted = cloneBalanceSettings(defaults);
+assisted.assumptions.trappedBallAssistActive = true;
+assisted.assumptions.trappedBallInactivitySeconds = assisted.pressureAssist.graceSeconds + 3;
+assert(getModeledBrickSpeedLevel(assisted) < getModeledBrickSpeedLevel(defaults),
+  'Explicit trapped-ball assumption did not apply canonical pressure assistance');
+
+const slowerBoss = cloneBalanceSettings(defaults);
+slowerBoss.boss.speedMultiplier *= 0.5;
+assert(calculateBalance(slowerBoss).boss.cruiseSpeed < calculateBalance(defaults).boss.cruiseSpeed,
+  'Boss speed multiplier input did not affect the Boss report');
 
 const deterministicA = calculateBalance(defaults);
 const deterministicB = calculateBalance(cloneBalanceSettings(defaults));

@@ -1,6 +1,7 @@
 import type { BrickState } from './brickField';
 import type { BrickDestruction } from './combat';
 import { GAME_CONFIG } from './config';
+import { getElectricSpec, getMissileSpec, getWindSpec } from './gameplayRules';
 
 function getCenterX(bounds: { x: number; width: number }): number {
   return bounds.x + bounds.width / 2;
@@ -21,6 +22,7 @@ export function rankElectricTargets(
   bricks: readonly BrickState[],
   excludedBrickIds?: ReadonlySet<string>,
 ): ElectricTargetScore[] {
+  const electricSpec = getElectricSpec(GAME_CONFIG.powers.maxLevel);
   const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
   const sourceCenterX = getCenterX(source);
@@ -43,7 +45,7 @@ export function rankElectricTargets(
     const columnDistance = horizontalDistance / horizontalPitch;
     const rowDistance = verticalDistance / verticalPitch;
     const tileDistance = columnDistance + rowDistance;
-    if (tileDistance > GAME_CONFIG.powers.electricRadiusInBrickPitches) continue;
+    if (tileDistance > electricSpec.radiusInBrickPitches) continue;
     const sameColumnUpward = getCenterY(brick) < sourceCenterY
       && rowDistance >= 1
       && columnDistance <= GAME_CONFIG.powers.electricSameColumnThresholdTiles;
@@ -85,22 +87,25 @@ export function selectWindTargets(
   source: BrickDestruction,
   bricks: readonly BrickState[],
 ): BrickState[] {
+  const spec = getWindSpec(level);
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
   const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
   const sourceCenterX = getCenterX(source);
   const sourceCenterY = getCenterY(source);
-  if (level >= GAME_CONFIG.powers.maxLevel) {
+  if (spec.widening) {
     return bricks
       .filter((brick) => {
         const spacesAbove = (sourceCenterY - getCenterY(brick)) / verticalPitch;
-        if (spacesAbove <= 0 || spacesAbove > 7) return false;
+        if (spacesAbove <= 0 || spacesAbove > spec.farRows) return false;
         const columnsAway = Math.abs(getCenterX(brick) - sourceCenterX) / horizontalPitch;
-        return spacesAbove <= 3 ? columnsAway <= 0.5 : columnsAway <= 1.5;
+        return spacesAbove <= spec.nearRows
+          ? columnsAway <= spec.nearHalfWidthColumns + 0.5
+          : columnsAway <= spec.farHalfWidthColumns + 0.5;
       })
       .sort((left, right) => right.y - left.y || left.x - right.x || left.id.localeCompare(right.id));
   }
   const eligible = rankWindTargets(source, bricks);
-  const rangeSpaces = GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
+  const rangeSpaces = spec.ordinaryRangeSpaces;
   const range = rangeSpaces * verticalPitch;
   return eligible.filter((brick) => sourceCenterY - getCenterY(brick) <= range);
 }
@@ -111,9 +116,10 @@ export function selectMissileTarget(
   reservedBrickIds: ReadonlySet<string>,
 ): BrickState | undefined {
   let selected: BrickState | undefined;
-  const verticalTolerance = GAME_CONFIG.powers.missileVerticalTieTolerance;
+  const missileSpec = getMissileSpec(GAME_CONFIG.powers.maxLevel);
+  const verticalTolerance = missileSpec.verticalTieTolerance;
   for (const brick of bricks) {
-    if (brick.kind === 'BOSS' || reservedBrickIds.has(brick.id)) continue;
+    if ((missileSpec.excludesBossTargets && brick.kind === 'BOSS') || reservedBrickIds.has(brick.id)) continue;
     if (!selected) {
       selected = brick;
       continue;

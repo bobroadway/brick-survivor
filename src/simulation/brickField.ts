@@ -7,6 +7,11 @@ import {
   getMinimumUpperBrickY,
 } from './brickGeometry';
 import { resolveBrickDescentSpeed, type BrickSpeedClass } from './difficulty';
+import {
+  canSpeedClassSpawnArmored,
+  getBrickOccupancyRangeForRules,
+  getCanonicalDensityRuleParameters,
+} from './gameplayRules';
 
 export type BrickKind = 'NORMAL' | 'BOSS';
 
@@ -96,17 +101,7 @@ function generateSpeedClass(field: BrickFieldState): BrickSpeedClass {
 }
 
 export function getBrickOccupancyRange(level: number): { minimum: number; maximum: number } {
-  const config = GAME_CONFIG.bricks;
-  const progress = Math.max(0, Math.min(
-    1,
-    (level - config.densityStartLevel) / (config.densityFullLevel - config.densityStartLevel),
-  ));
-  return {
-    minimum: Math.round(config.densityStartMinOccupancy
-      + (config.densityFullMinOccupancy - config.densityStartMinOccupancy) * progress),
-    maximum: Math.round(config.densityStartMaxOccupancy
-      + (config.densityFullMaxOccupancy - config.densityStartMaxOccupancy) * progress),
-  };
+  return getBrickOccupancyRangeForRules(level, getCanonicalDensityRuleParameters());
 }
 
 function generateFormation(
@@ -133,7 +128,7 @@ function generateFormation(
   for (let rank = 0; rank < targetCount; rank += 1) {
     const column = rankedColumns[rank].column;
     const speedClass = generateSpeedClass(field);
-    const armored = (speedClass === 'SLOW' || speedClass === 'MEDIUM')
+    const armored = canSpeedClassSpawnArmored(speedClass)
       && nextArmorRandom(field) < config.armoredEligibleChance;
     const brick: BrickState = {
       id: `${rowId}:${column}`,

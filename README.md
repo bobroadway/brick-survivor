@@ -35,6 +35,8 @@ npm run balance
 
 This opens a separate, Phaser-free desktop calculator for examining incoming board HP pressure, Ball and power throughput, and density-dependent build behavior. It loads an editable copy of the current game configuration; edits are temporary and never modify gameplay configuration or save data.
 
+The **GAME PARAMETERS** sections are rebuilt from canonical simulation configuration and use the same pure speed, density, armor, and power-rule helpers as gameplay. **MODEL ASSUMPTIONS** contains intentionally separate statistical estimates—contact efficiency, hit likelihood, trajectory retention, Ice realization, and deterministic sampling controls. Reset reconstructs both groups from their respective current defaults.
+
 - **MAX DPS** is a practical theoretical ceiling with targets available and efficient legal paths.
 - **MEDIAN DPS** is the 50th percentile from deterministic sampled layouts.
 - **LIKELY DPS** is the arithmetic mean under the selected density and assumptions.
@@ -42,6 +44,8 @@ This opens a separate, Phaser-free desktop calculator for examining incoming boa
 - **NET PRESSURE** is BOARD HP/s minus player DPS. It is a throughput comparison, not an exact survival prediction.
 
 Monte Carlo calculations use an editable fixed seed and sample count, so identical inputs reproduce identical results. The model is intentionally approximate and is not a replay or frame-by-frame game simulation.
+
+Boss pre-gap/placement geometry, exact projectile travel, ball losses after Split activations, and the full spatial history of chained effects are intentionally not simulated. The Lab labels Boss spatial omissions and reports its pressure figures as throughput estimates.
 
 ## Structure
 

@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from './config';
+import { getPressureAssistTargetLevel } from './gameplayRules';
 
 export interface BrickPressureAssistState {
   timeSinceLastBallPaddleContact: number;
@@ -26,9 +27,11 @@ export function advanceBrickPressureAssist(
 ): void {
   const config = GAME_CONFIG.difficulty;
   const deltaSeconds = Math.max(0, activeWorldDeltaSeconds);
-  const target = state.timeSinceLastBallPaddleContact < config.brickPressureAssistGraceSeconds
-    ? 0
-    : config.brickPressureAssistMaximumLevels;
+  const target = getPressureAssistTargetLevel(state.timeSinceLastBallPaddleContact, {
+    graceSeconds: config.brickPressureAssistGraceSeconds,
+    maximumLevels: config.brickPressureAssistMaximumLevels,
+    levelsPerSecond: config.brickPressureAssistLevelsPerSecond,
+  });
   const maximumChange = config.brickPressureAssistLevelsPerSecond * deltaSeconds;
   state.brickPressureAssistLevels = moveToward(
     state.brickPressureAssistLevels,

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { GAME_CONFIG } from '../../simulation/config';
 import type { GameState } from '../../simulation/gameState';
 import { getPowerDefinition, getPowerDescription, getPowerLevel } from '../../simulation/powers';
 import { RenderQualityManager } from '../rendering/RenderQualityManager';
@@ -41,7 +42,7 @@ export class BuildOverlay {
       if (!id) continue;
       const definition = getPowerDefinition(id);
       const level = getPowerLevel(state.powers, id);
-      entry.setText(`${definition.name}     Lv. ${level}${level === 5 ? '  MAX' : ''}\n${getPowerDescription(id, level, false)}`);
+      entry.setText(`${definition.name}     Lv. ${level}${level === GAME_CONFIG.powers.maxLevel ? '  MAX' : ''}\n${getPowerDescription(id, level, false)}`);
     }
   }
 

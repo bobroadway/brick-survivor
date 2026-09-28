@@ -1,0 +1,10 @@
+import './armoredBoss.test';
+import './balanceModel.test';
+import './brickGeometry.test';
+import './brickPressureAssist.test';
+import './dangerPresentation.test';
+import './gameplayRules.test';
+import './iceBall.test';
+import './powerChoiceNavigation.test';
+import './powerRefinement.test';
+import './survivalDifficulty.test';

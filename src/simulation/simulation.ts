@@ -27,6 +27,15 @@ import {
 import { rankElectricTargets, selectMissileTarget, selectWindTargets } from './powerTargeting';
 import { getPaddleBounceElevationDegrees } from './paddleBounce';
 import { getPowerLevel } from './powers';
+import {
+  getElectricSpec,
+  getFireSpec,
+  getGunSpec,
+  getMissileSpec,
+  getPierceSpec,
+  getSplitSpec,
+  getWindSpec,
+} from './gameplayRules';
 import { getBrickDensityDifficultyLevel, getVirtualDifficultyLevel } from './survivalDifficulty';
 
 export interface SimulationInput {
@@ -146,11 +155,12 @@ function triggerElectric(
   const sourceY = destruction.y + destruction.height / 2;
   const bricks: BrickState[] = [];
   for (const column of state.brickField.columns) bricks.push(...column);
-  const targetCount = GAME_CONFIG.powers.electricPrimaryTargetsByLevel[level - 1];
+  const electricSpec = getElectricSpec(level);
+  const targetCount = electricSpec.primaryTargets;
   const targets = rankElectricTargets(destruction, bricks, excludedBrickIds)
     .slice(0, targetCount)
     .map(({ brick }) => brick);
-  const proc = level === GAME_CONFIG.powers.maxLevel && targets.length > 0
+  const proc = electricSpec.secondaryEnabled && targets.length > 0
     ? {
       id: state.nextElectricProcId++,
       primaryTargetIds: new Set(targets.map(({ id }) => id)),
@@ -173,6 +183,7 @@ function triggerElectric(
       },
       damage: 1, targetBrickId: brick.id,
       electricProcId: proc?.id, electricGeneration: proc ? 'PRIMARY' : undefined,
+      electricGenerationDepth: proc ? 0 : undefined,
       electricFlightProgress: 0,
       electricInitialDistance: initialDistance,
       electricVisualAmplitude: createElectricVisualAmplitude(projectileId, brick.id),
@@ -211,15 +222,14 @@ function triggerWind(
     .map((brick) => [brick.id, brick])).values()];
   const sourceCenterY = destruction.y + destruction.height / 2;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
-  const rangeSpaces = level === GAME_CONFIG.powers.maxLevel
-    ? 7
-    : GAME_CONFIG.powers.windRangeSpacesByLevel[level - 1] ?? 0;
+  const windSpec = getWindSpec(level);
+  const rangeSpaces = windSpec.widening ? windSpec.farRows : windSpec.ordinaryRangeSpaces;
   const range = rangeSpaces * verticalPitch;
   for (const source of sources) state.windEffects.push({
     x: source.x + source.width / 2,
     y1: Math.max(GAME_CONFIG.playfield.top, sourceCenterY - range),
     y2: sourceCenterY,
-    topHalfWidth: level === GAME_CONFIG.powers.maxLevel
+    topHalfWidth: windSpec.widening
       ? GAME_CONFIG.bricks.brickWidth / 2 + GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap
       : undefined,
     remainingSeconds: GAME_CONFIG.powers.windEffectSeconds,
@@ -235,7 +245,8 @@ function triggerFire(
   const level = getPowerLevel(state.powers, 'FIRE_BALL');
   if (level === 0) return;
   const sourceCenterY = destruction.y + destruction.height / 2;
-  const radiusSpaces = GAME_CONFIG.powers.fireHorizontalRadiusSpacesByLevel[level - 1] ?? 0;
+  const fireSpec = getFireSpec(level);
+  const radiusSpaces = fireSpec.horizontalRadiusSpaces;
   const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
   const radius = horizontalPitch * radiusSpaces;
@@ -246,9 +257,9 @@ function triggerFire(
     for (const brick of column) {
       if (excludedBrickIds?.has(brick.id)) continue;
       const sourceHalfHeight = destruction.height / 2;
-      const verticallyIntersects = level === GAME_CONFIG.powers.maxLevel
+      const verticallyIntersects = fireSpec.extraRows > 0
         ? Math.abs(brick.y + brick.height / 2 - sourceCenterY)
-          <= sourceHalfHeight + verticalPitch + GAME_CONFIG.bricks.brickHeight / 2
+          <= sourceHalfHeight + fireSpec.extraRows * verticalPitch + GAME_CONFIG.bricks.brickHeight / 2
         : brick.y <= destruction.y + destruction.height && brick.y + brick.height >= destruction.y;
       const targetCenterX = brick.x + brick.width / 2;
       const inRange = targetCenterX >= sourceLeftCenter - radius
@@ -260,8 +271,11 @@ function triggerFire(
   const x2 = Math.min(GAME_CONFIG.playfield.right, sourceRightCenter + radius);
   state.fireEffects.push({
     x1, x2, y: sourceCenterY,
-    additionalYs: level === GAME_CONFIG.powers.maxLevel
-      ? [sourceCenterY - verticalPitch, sourceCenterY + verticalPitch]
+    additionalYs: fireSpec.extraRows > 0
+      ? Array.from({ length: fireSpec.extraRows * 2 }, (_, index) => {
+        const row = index < fireSpec.extraRows ? index - fireSpec.extraRows : index - fireSpec.extraRows + 1;
+        return sourceCenterY + row * verticalPitch;
+      })
       : undefined,
     remainingSeconds: GAME_CONFIG.powers.fireEffectSeconds,
   });
@@ -293,14 +307,19 @@ function triggerIceBallElementalProc(
 }
 
 function spawnGunVolley(state: GameState): void {
+  const spec = getGunSpec(getPowerLevel(state.powers, 'GUN'));
   const halfWidth = state.paddle.width / 2;
   const inset = Math.min(GAME_CONFIG.powers.gunMountInset, halfWidth);
   const mountOffset = halfWidth - inset;
-  for (const x of [state.paddle.x - mountOffset, state.paddle.x + mountOffset]) {
+  const projectileXs = spec.projectilesPerVolley <= 1
+    ? [state.paddle.x]
+    : Array.from({ length: spec.projectilesPerVolley }, (_, index) =>
+      state.paddle.x - mountOffset + index * mountOffset * 2 / (spec.projectilesPerVolley - 1));
+  for (const x of projectileXs) {
     state.projectiles.push({
       id: state.nextProjectileId++, kind: 'GUN', x,
       y: state.paddle.y - state.paddle.height / 2,
-      velocity: { x: 0, y: -GAME_CONFIG.powers.projectileSpeed }, damage: 1,
+      velocity: { x: 0, y: -spec.projectileSpeed }, damage: spec.projectileDamage,
     });
   }
 }
@@ -308,33 +327,35 @@ function spawnGunVolley(state: GameState): void {
 function updateGun(state: GameState, deltaSeconds: number): void {
   const level = getPowerLevel(state.powers, 'GUN');
   if (level === 0) return;
+  const spec = getGunSpec(level);
   const powers = state.powers;
   if (powers.gunReloadSeconds > 0) {
     powers.gunReloadSeconds = Math.max(0, powers.gunReloadSeconds - deltaSeconds);
-    if (powers.gunReloadSeconds === 0) powers.gunVolleysRemaining = level;
+    if (powers.gunReloadSeconds === 0) powers.gunVolleysRemaining = spec.volleys;
     return;
   }
   powers.gunShotCooldownSeconds = Math.max(0, powers.gunShotCooldownSeconds - deltaSeconds);
   if (powers.gunVolleysRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
   spawnGunVolley(state);
   powers.gunVolleysRemaining -= 1;
-  if (powers.gunVolleysRemaining > 0) powers.gunShotCooldownSeconds = GAME_CONFIG.powers.gunShotIntervalSeconds;
-  else powers.gunReloadSeconds = GAME_CONFIG.powers.gunReloadSeconds;
+  if (powers.gunVolleysRemaining > 0) powers.gunShotCooldownSeconds = spec.shotIntervalSeconds;
+  else powers.gunReloadSeconds = spec.reloadSeconds;
 }
 
 function launchMissile(state: GameState): void {
   const powers = state.powers;
+  const spec = getMissileSpec(getPowerLevel(state.powers, 'HOMING_MISSILE'));
   const offset = GAME_CONFIG.powers.missileLaunchOffsets[powers.missileLaunchIndex] ?? 0;
   state.projectiles.push({
     id: state.nextProjectileId++,
     kind: 'MISSILE',
     x: state.paddle.x + state.paddle.width / 2 * offset,
     y: state.paddle.y - state.paddle.height / 2,
-    velocity: { x: 0, y: -GAME_CONFIG.powers.missileDeploymentSpeed },
-    damage: 1,
+    velocity: { x: 0, y: -spec.deploymentSpeed },
+    damage: spec.damage,
     missilePhase: 'DEPLOYING',
-    deploymentRemainingSeconds: GAME_CONFIG.powers.missileDeploymentDurationSeconds,
-    homingSpeed: GAME_CONFIG.powers.missileHomingInitialSpeed,
+    deploymentRemainingSeconds: spec.deploymentDurationSeconds,
+    homingSpeed: spec.homingInitialSpeed,
   });
   powers.missileLaunchIndex += 1;
 }
@@ -342,11 +363,12 @@ function launchMissile(state: GameState): void {
 function updateMissileFiring(state: GameState, deltaSeconds: number): void {
   const level = getPowerLevel(state.powers, 'HOMING_MISSILE');
   if (level === 0) return;
+  const spec = getMissileSpec(level);
   const powers = state.powers;
   if (powers.missileReloadSeconds > 0) {
     powers.missileReloadSeconds = Math.max(0, powers.missileReloadSeconds - deltaSeconds);
     if (powers.missileReloadSeconds > 0) return;
-    powers.missilesRemainingInVolley = level;
+    powers.missilesRemainingInVolley = spec.missileCount;
     powers.missileLaunchIndex = 0;
     powers.missileLaunchCooldownSeconds = 0;
   }
@@ -355,24 +377,23 @@ function updateMissileFiring(state: GameState, deltaSeconds: number): void {
   launchMissile(state);
   powers.missilesRemainingInVolley -= 1;
   if (powers.missilesRemainingInVolley > 0) {
-    powers.missileLaunchCooldownSeconds = level === GAME_CONFIG.powers.maxLevel
-      ? GAME_CONFIG.powers.missileLevelFiveLaunchIntervalSeconds
-      : GAME_CONFIG.powers.missileLaunchIntervalSeconds;
+    powers.missileLaunchCooldownSeconds = spec.launchIntervalSeconds;
   } else {
-    powers.missileReloadSeconds = GAME_CONFIG.powers.missileReloadSeconds;
+    powers.missileReloadSeconds = spec.reloadSeconds;
   }
 }
 
 function updateSplitting(state: GameState, deltaSeconds: number): void {
   const level = getPowerLevel(state.powers, 'SPLITTING_BALL');
   if (level === 0 || state.balls.length === 0) return;
+  const spec = getSplitSpec(level);
   state.powers.splitTimerSeconds += deltaSeconds;
-  const cooldown = GAME_CONFIG.powers.splittingCooldownSecondsByLevel[level - 1];
+  const cooldown = spec.cooldownSeconds;
   while (state.powers.splitTimerSeconds >= cooldown) {
     state.powers.splitTimerSeconds -= cooldown;
     let oldest = state.balls[0];
     for (const ball of state.balls) if (ball.id < oldest.id) oldest = ball;
-    spawnSplitBalls(state, oldest, 1);
+    spawnSplitBalls(state, oldest, spec.ballsAddedPerActivation);
   }
 }
 
@@ -394,45 +415,53 @@ function launchSecondaryElectric(
   state: GameState,
   procId: number | undefined,
   origin: { x: number; y: number; width: number; height: number },
+  parentGenerationDepth: number,
 ): void {
   const proc = findElectricProc(state, procId);
   if (!proc) return;
-  const candidates: BrickState[] = [];
-  for (const column of state.brickField.columns) candidates.push(...column);
-  const excludedTargetIds = new Set(proc.primaryTargetIds);
-  for (const id of proc.secondaryTargetIds) excludedTargetIds.add(id);
-  for (const id of proc.excludedTargetIds ?? []) excludedTargetIds.add(id);
-  const target = rankElectricTargets(
-    { source: 'ELECTRIC', ...origin },
-    candidates,
-    excludedTargetIds,
-  )[0]?.brick;
-  if (!target) return;
-  proc.secondaryTargetIds.add(target.id);
-  proc.activeProjectileCount += 1;
-  const projectileId = state.nextProjectileId++;
-  const sourceX = origin.x + origin.width / 2;
-  const sourceY = origin.y + origin.height / 2;
-  const targetX = target.x + target.width / 2;
-  const targetY = target.y + target.height / 2;
-  const initialDistance = Math.hypot(targetX - sourceX, targetY - sourceY);
-  state.projectiles.push({
-    id: projectileId,
-    kind: 'ELECTRIC',
-    x: sourceX,
-    y: sourceY,
-    velocity: {
-      x: initialDistance > 0 ? (targetX - sourceX) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
-      y: initialDistance > 0 ? (targetY - sourceY) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
-    },
-    damage: 1,
-    targetBrickId: target.id,
-    electricProcId: proc.id,
-    electricGeneration: 'SECONDARY',
-    electricFlightProgress: 0,
-    electricInitialDistance: initialDistance,
-    electricVisualAmplitude: createElectricVisualAmplitude(projectileId, target.id),
-  });
+  const spec = getElectricSpec(GAME_CONFIG.powers.electricSecondaryEnabledAtLevel);
+  for (let launch = 0; launch < spec.secondaryTargetsPerPrimary; launch += 1) {
+    const candidates: BrickState[] = [];
+    for (const column of state.brickField.columns) candidates.push(...column);
+    const excludedTargetIds = new Set<string>();
+    if (spec.targetsMustBeUnique) {
+      for (const id of proc.primaryTargetIds) excludedTargetIds.add(id);
+      for (const id of proc.secondaryTargetIds) excludedTargetIds.add(id);
+    }
+    for (const id of proc.excludedTargetIds ?? []) excludedTargetIds.add(id);
+    const target = rankElectricTargets(
+      { source: 'ELECTRIC', ...origin },
+      candidates,
+      excludedTargetIds,
+    )[0]?.brick;
+    if (!target) return;
+    proc.secondaryTargetIds.add(target.id);
+    proc.activeProjectileCount += 1;
+    const projectileId = state.nextProjectileId++;
+    const sourceX = origin.x + origin.width / 2;
+    const sourceY = origin.y + origin.height / 2;
+    const targetX = target.x + target.width / 2;
+    const targetY = target.y + target.height / 2;
+    const initialDistance = Math.hypot(targetX - sourceX, targetY - sourceY);
+    state.projectiles.push({
+      id: projectileId,
+      kind: 'ELECTRIC',
+      x: sourceX,
+      y: sourceY,
+      velocity: {
+        x: initialDistance > 0 ? (targetX - sourceX) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
+        y: initialDistance > 0 ? (targetY - sourceY) / initialDistance * GAME_CONFIG.powers.projectileSpeed : 0,
+      },
+      damage: 1,
+      targetBrickId: target.id,
+      electricProcId: proc.id,
+      electricGeneration: 'SECONDARY',
+      electricGenerationDepth: parentGenerationDepth + 1,
+      electricFlightProgress: 0,
+      electricInitialDistance: initialDistance,
+      electricVisualAmplitude: createElectricVisualAmplitude(projectileId, target.id),
+    });
+  }
 }
 
 function findSweptProjectileHit(
@@ -487,7 +516,12 @@ function acquireMissileTarget(state: GameState, projectileId: number, missileX: 
   return selectMissileTarget(missileX, state.brickField.columns.flat(), reserved);
 }
 
-function steerMissileToward(projectile: GameState['projectiles'][number], target: BrickState, deltaSeconds: number): void {
+function steerMissileToward(
+  projectile: GameState['projectiles'][number],
+  target: BrickState,
+  deltaSeconds: number,
+  spec: ReturnType<typeof getMissileSpec>,
+): void {
   const currentAngle = Math.atan2(projectile.velocity.y, projectile.velocity.x);
   const desiredAngle = Math.atan2(
     target.y + target.height / 2 - projectile.y,
@@ -496,18 +530,18 @@ function steerMissileToward(projectile: GameState['projectiles'][number], target
   let angleDifference = desiredAngle - currentAngle;
   while (angleDifference > Math.PI) angleDifference -= Math.PI * 2;
   while (angleDifference < -Math.PI) angleDifference += Math.PI * 2;
-  const maximumTurn = GAME_CONFIG.powers.missileTurnRateRadiansPerSecond * deltaSeconds;
+  const maximumTurn = spec.turnRateRadiansPerSecond * deltaSeconds;
   const heading = currentAngle + Math.max(-maximumTurn, Math.min(maximumTurn, angleDifference));
   projectile.homingSpeed = Math.min(
-    GAME_CONFIG.powers.missileHomingMaximumSpeed,
-    (projectile.homingSpeed ?? GAME_CONFIG.powers.missileHomingInitialSpeed)
-      + GAME_CONFIG.powers.missileHomingAcceleration * deltaSeconds,
+    spec.homingMaximumSpeed,
+    (projectile.homingSpeed ?? spec.homingInitialSpeed) + spec.homingAcceleration * deltaSeconds,
   );
   projectile.velocity.x = Math.cos(heading) * projectile.homingSpeed;
   projectile.velocity.y = Math.sin(heading) * projectile.homingSpeed;
 }
 
 function updateMissile(state: GameState, projectile: GameState['projectiles'][number], deltaSeconds: number): boolean {
+  const spec = getMissileSpec(getPowerLevel(state.powers, 'HOMING_MISSILE'));
   if (projectile.missilePhase === 'DEPLOYING') {
     projectile.deploymentRemainingSeconds = Math.max(0, (projectile.deploymentRemainingSeconds ?? 0) - deltaSeconds);
     if (projectile.deploymentRemainingSeconds === 0) projectile.missilePhase = 'SEARCHING';
@@ -520,14 +554,14 @@ function updateMissile(state: GameState, projectile: GameState['projectiles'][nu
       if (target) {
         projectile.targetBrickId = target.id;
         projectile.missilePhase = 'HOMING';
-        if (!projectile.homingSpeed) projectile.homingSpeed = GAME_CONFIG.powers.missileHomingInitialSpeed;
+        if (!projectile.homingSpeed) projectile.homingSpeed = spec.homingInitialSpeed;
       } else {
         projectile.missilePhase = 'SEARCHING';
         projectile.velocity.x = 0;
-        projectile.velocity.y = -GAME_CONFIG.powers.missileDeploymentSpeed;
+        projectile.velocity.y = -spec.deploymentSpeed;
       }
     }
-    if (target) steerMissileToward(projectile, target, deltaSeconds);
+    if (target) steerMissileToward(projectile, target, deltaSeconds, spec);
   }
 
   const previousX = projectile.x;
@@ -535,13 +569,13 @@ function updateMissile(state: GameState, projectile: GameState['projectiles'][nu
   projectile.x += projectile.velocity.x * deltaSeconds;
   projectile.y += projectile.velocity.y * deltaSeconds;
   const hit = findSweptProjectileHit(
-    state, previousX, previousY, projectile.x, projectile.y, GAME_CONFIG.powers.missileCollisionRadius,
+    state, previousX, previousY, projectile.x, projectile.y, spec.collisionRadius,
   );
   if (hit) {
     applyRoutedBrickDamage(state, hit, projectile.damage, 'MISSILE');
     return true;
   }
-  return projectile.y + GAME_CONFIG.powers.missileCollisionRadius < GAME_CONFIG.playfield.top;
+  return projectile.y + spec.collisionRadius < GAME_CONFIG.playfield.top;
 }
 
 function updateProjectiles(state: GameState, deltaSeconds: number): void {
@@ -567,8 +601,10 @@ function updateProjectiles(state: GameState, deltaSeconds: number): void {
       if (distance <= travel) {
         const impactOrigin = { x: target.x, y: target.y, width: target.width, height: target.height };
         applyRoutedBrickDamage(state, target, projectile.damage, 'ELECTRIC');
-        if (projectile.electricGeneration === 'PRIMARY') {
-          launchSecondaryElectric(state, projectile.electricProcId, impactOrigin);
+        const electricSpec = getElectricSpec(GAME_CONFIG.powers.electricSecondaryEnabledAtLevel);
+        const generationDepth = projectile.electricGenerationDepth ?? 0;
+        if (generationDepth < electricSpec.generationDepth) {
+          launchSecondaryElectric(state, projectile.electricProcId, impactOrigin, generationDepth);
         }
         finishElectricProjectile(state, projectile.electricProcId);
         state.projectiles.splice(index, 1);
@@ -711,7 +747,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
     const hitOffset = ball.x - paddle.x;
     const elevation = getPaddleBounceElevationDegrees(getPowerLevel(state.powers, 'PADDLE_SIZE'), Math.abs(hitOffset));
     setPaddleBounceDirection(ball, elevation, hitOffset);
-    ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+    ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
     recordBallPaddleContact(state.brickPressureAssist);
   }
 
@@ -738,7 +774,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
         else {
           ball.pierceCharge = 0;
           bounceFromBrickFace(ball, brick, collisionResolution);
-          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+          ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
         }
       } else if (isPendingFreezeBrick(brick)) {
         if (isPendingFreezeSafetyContact(brick, ball.id)) {
@@ -749,7 +785,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
         else {
           ball.pierceCharge = 0;
           bounceFromBrickFace(ball, brick, collisionResolution);
-          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+          ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
         }
       } else if (brick.kind === 'BOSS') {
         const damage = 1 + ball.pierceCharge;
@@ -763,7 +799,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
         } else {
           handleBallKill(state, applyRoutedBrickDamage(state, brick, damage, 'BALL').destruction);
         }
-        ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
       } else if (brick.armored && brick.hp > 1) {
         if (canPierceThrough) {
           ball.pierceCharge -= brickHp;
@@ -773,7 +809,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
           ball.pierceCharge = 0;
           bounceFromBrickFace(ball, brick, collisionResolution);
           handleBallKill(state, applyRoutedBrickDamage(state, brick, 1 + pierceDamage, 'BALL').destruction);
-          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+          ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
         }
       } else if (iceOwned) {
         if (freezeBrick(brick, ball.id)) triggerIceBallElementalProc(state, brick, 'INITIAL_ICE_FREEZE');
@@ -781,7 +817,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
         else {
           ball.pierceCharge = 0;
           bounceFromBrickFace(ball, brick, collisionResolution);
-          ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+          ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
         }
       } else if (canPierceThrough) {
         ball.pierceCharge -= brickHp;
@@ -791,7 +827,7 @@ function updateBall(state: GameState, ball: BallState, deltaSeconds: number): bo
         ball.pierceCharge = 0;
         bounceFromBrickFace(ball, brick, collisionResolution);
         handleBallKill(state, applyRoutedBrickDamage(state, brick, 1 + pierceDamage, 'BALL').destruction);
-        ball.pierceCharge = getPowerLevel(state.powers, 'PIERCING_BALL');
+        ball.pierceCharge = getPierceSpec(getPowerLevel(state.powers, 'PIERCING_BALL')).capacity;
       }
       collided = true;
       break;

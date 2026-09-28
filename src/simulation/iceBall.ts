@@ -8,6 +8,7 @@ import { applyBrickDamage, awardBrickDestruction } from './combat';
 import { GAME_CONFIG } from './config';
 import type { BallState, GameState } from './gameState';
 import { getPowerLevel } from './powers';
+import { getIceSpec } from './gameplayRules';
 
 export function isFrozenBrick(brick: BrickState): brick is BrickState & { iceCollisionKills: number } {
   return brick.iceState === 'FROZEN' && brick.iceCollisionKills !== undefined;
@@ -94,7 +95,7 @@ export function advanceFrozenBrickSafety(state: GameState, worldDeltaSeconds: nu
       const creatingContactCleared = brick.iceFreezeSafetyBallId !== undefined
         && (!freezingBall || !overlapsBrick(freezingBall, brick));
       const safetyExpired = brick.iceFreezeSafetyElapsedSeconds
-        >= GAME_CONFIG.powers.iceDirectShatterSafetyMaximumSeconds;
+        >= getIceSpec(getPowerLevel(state.powers, 'ICE_BALL')).directShatterSafetyMaximumSeconds;
       if (!creatingContactCleared && !safetyExpired) continue;
       brick.iceFreezeSafetyActive = false;
       brick.iceFreezeSafetyBallId = undefined;
@@ -112,19 +113,25 @@ function isBrickActive(state: GameState, brick: BrickState): boolean {
 }
 
 function getShatterTargets(state: GameState, origin: BrickState): BrickState[] {
+  const iceSpec = getIceSpec(getPowerLevel(state.powers, 'ICE_BALL'));
+  const footprint = origin.kind === 'BOSS' ? iceSpec.bossShatterFootprint : iceSpec.normalShatterFootprint;
+  const footprintHorizontalRadius = Math.max(...footprint.map(({ column }) => Math.abs(column)), 0);
+  const horizontalRadius = origin.kind === 'BOSS'
+    ? Math.max(0, footprintHorizontalRadius - Math.floor(GAME_CONFIG.boss.widthColumns / 2))
+    : footprintHorizontalRadius;
+  const verticalRadiusSpaces = Math.max(...footprint.map(({ row }) => Math.abs(row)), 0);
   const originCenterY = origin.y + origin.height / 2;
   const verticalPitch = GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap;
   const verticalTolerance = GAME_CONFIG.bricks.verticalEdgeGap / 2;
   const targets: BrickState[] = [];
   for (const column of state.brickField.columns) {
     for (const brick of column) {
-      const horizontalRadius = origin.kind === 'BOSS' ? 1 : 1;
       const originLeftColumn = origin.column;
       const originRightColumn = origin.column + (origin.kind === 'BOSS' ? GAME_CONFIG.boss.widthColumns - 1 : 0);
       if (brick.column < originLeftColumn - horizontalRadius
         || brick.column > originRightColumn + horizontalRadius) continue;
       const centerY = brick.y + brick.height / 2;
-      const verticalRadius = origin.kind === 'BOSS' ? 2 * verticalPitch : verticalPitch;
+      const verticalRadius = verticalRadiusSpaces * verticalPitch;
       if (Math.abs(centerY - originCenterY) <= verticalRadius + verticalTolerance) targets.push(brick);
     }
   }
@@ -135,7 +142,7 @@ function getShatterTargets(state: GameState, origin: BrickState): BrickState[] {
 
 export function shatterFrozenBrick(state: GameState, initialBrick: BrickState): number {
   if (!isFrozenBrick(initialBrick) || !isBrickActive(state, initialBrick)) return 0;
-  const chainEnabled = getPowerLevel(state.powers, 'ICE_BALL') === GAME_CONFIG.powers.maxLevel;
+  const chainEnabled = getIceSpec(getPowerLevel(state.powers, 'ICE_BALL')).chainEnabled;
   const queue: BrickState[] = [initialBrick];
   const queuedIds = new Set([initialBrick.id]);
   const shatteredIds = new Set<string>();
@@ -183,6 +190,6 @@ export function handleFrozenBrickContact(state: GameState, contact: FrozenBrickC
   }
   frozen.iceCollisionKills += 1;
   const level = getPowerLevel(state.powers, 'ICE_BALL');
-  const capacity = GAME_CONFIG.powers.iceCollisionCapacityByLevel[Math.max(0, level - 1)] ?? 1;
+  const capacity = getIceSpec(level).collisionCapacity;
   if (frozen.iceCollisionKills >= capacity) shatterFrozenBrick(state, frozen);
 }

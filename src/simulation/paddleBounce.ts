@@ -1,7 +1,5 @@
 import { GAME_CONFIG } from './config';
-
-const CENTER_ELEVATION_DEGREES = 90;
-const BASE_EDGE_ELEVATION_DEGREES = 45;
+import { getPaddleSizeSpec } from './gameplayRules';
 
 function monotoneHermite(
   start: number,
@@ -21,18 +19,19 @@ function monotoneHermite(
 export function getPaddleBounceElevationDegrees(powerLevel: number, absoluteImpactOffset: number): number {
   const baseHalfWidth = GAME_CONFIG.paddle.width / 2;
   const clampedLevel = Math.max(0, Math.min(GAME_CONFIG.powers.maxLevel, Math.floor(powerLevel)));
-  const currentHalfWidth = baseHalfWidth * (1 + clampedLevel * 0.2);
+  const spec = getPaddleSizeSpec(clampedLevel);
+  const currentHalfWidth = baseHalfWidth * spec.widthMultiplier;
   const offset = Math.max(0, Math.min(currentHalfWidth, Math.abs(absoluteImpactOffset)));
 
   if (offset <= baseHalfWidth || clampedLevel === 0) {
-    return CENTER_ELEVATION_DEGREES
-      + (BASE_EDGE_ELEVATION_DEGREES - CENTER_ELEVATION_DEGREES) * (offset / baseHalfWidth);
+    return spec.centerElevationDegrees
+      + (spec.baseEdgeElevationDegrees - spec.centerElevationDegrees) * (offset / baseHalfWidth);
   }
 
-  const outerElevation = GAME_CONFIG.powers.paddleOuterEdgeElevationDegreesByLevel[clampedLevel - 1];
+  const outerElevation = spec.extendedWingMinimumElevationDegrees;
   const extensionWidth = currentHalfWidth - baseHalfWidth;
   const progress = (offset - baseHalfWidth) / extensionWidth;
-  const matchingBoundarySlope = (BASE_EDGE_ELEVATION_DEGREES - CENTER_ELEVATION_DEGREES)
+  const matchingBoundarySlope = (spec.baseEdgeElevationDegrees - spec.centerElevationDegrees)
     * (extensionWidth / baseHalfWidth);
-  return monotoneHermite(BASE_EDGE_ELEVATION_DEGREES, outerElevation, matchingBoundarySlope, progress);
+  return monotoneHermite(spec.baseEdgeElevationDegrees, outerElevation, matchingBoundarySlope, progress);
 }

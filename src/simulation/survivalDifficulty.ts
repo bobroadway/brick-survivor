@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from './config';
+import { getCanonicalSurvivalRuleParameters, getVirtualDifficultyLevelForRules } from './gameplayRules';
 
 export enum SurvivalPhase {
   EasyStart = 'EASY_START',
@@ -16,14 +17,7 @@ export function getSurvivalPhase(survivalTimeSeconds: number): SurvivalPhase {
 }
 
 export function getVirtualDifficultyLevel(survivalTimeSeconds: number): number {
-  const config = GAME_CONFIG.survival;
-  const progress = Math.max(0, Math.min(
-    1,
-    (survivalTimeSeconds - config.easyStartDurationSeconds)
-      / (config.rampEndSeconds - config.easyStartDurationSeconds),
-  ));
-  return config.rampStartDifficultyLevel
-    + (config.rampEndDifficultyLevel - config.rampStartDifficultyLevel) * progress;
+  return getVirtualDifficultyLevelForRules(survivalTimeSeconds, getCanonicalSurvivalRuleParameters());
 }
 
 export function getBrickDensityDifficultyLevel(survivalTimeSeconds: number): number {
