@@ -260,12 +260,12 @@ function spawnBoss(field: BrickFieldState, startColumn: number, y: number): Bric
 }
 
 export function getMaximumConfiguredRushSpeed(): number {
-  return resolveBrickDescentSpeed('RUSH', GAME_CONFIG.survival.rampEndDifficultyLevel);
+  return GAME_CONFIG.brickSpeed.bossEntranceSpeed;
 }
 
-export function getBossDescentSpeed(brick: BrickState, speedLevel: number): number {
-  const cruiseSpeed = resolveBrickDescentSpeed('SLOW', speedLevel) * GAME_CONFIG.boss.slowSpeedMultiplier;
-  if (brick.kind !== 'BOSS') return resolveBrickDescentSpeed(brick.speedClass, speedLevel);
+export function getBossDescentSpeed(brick: BrickState, speedProgress: number): number {
+  const cruiseSpeed = resolveBrickDescentSpeed('SLOW', speedProgress) * GAME_CONFIG.boss.slowSpeedMultiplier;
+  if (brick.kind !== 'BOSS') return resolveBrickDescentSpeed(brick.speedClass, speedProgress);
   if (brick.bossArrivalPhase === 'RUSH') return getMaximumConfiguredRushSpeed();
   if (brick.bossArrivalPhase === 'DECELERATING') {
     const progress = Math.max(0, Math.min(1,
@@ -305,7 +305,7 @@ export function advanceBrickField(
   field: BrickFieldState,
   deltaSeconds: number,
   densityLevel: number = GAME_CONFIG.progression.startingLevel,
-  speedLevel: number = densityLevel,
+  speedProgress = 0,
   callbacks: BrickFieldCallbacks | ((contact: FrozenBrickContact) => void) = {},
 ): boolean {
   const resolvedCallbacks: BrickFieldCallbacks = typeof callbacks === 'function'
@@ -318,7 +318,7 @@ export function advanceBrickField(
     for (let index = column.length - 1; index >= 0; index -= 1) {
       const brick = column[index];
       if (brick.iceCollisionKills !== undefined) continue;
-      const descentSpeed = getBossDescentSpeed(brick, speedLevel);
+      const descentSpeed = getBossDescentSpeed(brick, speedProgress);
       let nextY = brick.y + descentSpeed * deltaSeconds;
       const brickBelow = allBricks
         .filter((candidate) => candidate !== brick

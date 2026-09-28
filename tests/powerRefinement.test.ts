@@ -24,6 +24,8 @@ import { resolveBrickDescentSpeed, type BrickSpeedClass } from '../src/simulatio
 import { getBallTargetSpeed, stepSimulation } from '../src/simulation/simulation';
 import { getPaddleBounceElevationDegrees } from '../src/simulation/paddleBounce';
 import { getTransientEffectAlpha } from '../src/simulation/transientEffect';
+import { getGunSpec, getMissileSpec } from '../src/simulation/gameplayRules';
+import { getBrickRowPitch } from '../src/simulation/brickGeometry';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -321,10 +323,13 @@ function testFireWidthsAndVisuals(): void {
 }
 
 function testWindRangesAndVisuals(): void {
+  const rowPitch = getBrickRowPitch();
   for (let level = 1; level <= 5; level += 1) {
     const { state } = createDirectionalProcScenario('WIND_BALL', level);
     for (let space = 1; space <= 8; space += 1) {
-      addBrick(state, makeBrick(`wind-space-${space}`, 602, 400 - space * 24));
+      // Keep boundary fixtures infinitesimally inside the range so collision correction
+      // and fixed-step floating-point movement cannot turn an inclusive edge into > range.
+      addBrick(state, makeBrick(`wind-space-${space}`, 602, 400 - space * rowPitch + 0.001));
     }
     stepSimulation(state, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 0.05, 0.05);
     const survivingSpaces = state.brickField.columns.flat()
@@ -338,7 +343,7 @@ function testWindRangesAndVisuals(): void {
     assert(effect, `Wind Lv${level} visual missing`);
     assertNear(
       effect.y1,
-      effect.y2 - range * 24,
+      effect.y2 - range * rowPitch,
       `Wind Lv${level} visual top`,
     );
   }
@@ -360,21 +365,24 @@ function testWindRanking(): void {
 
 function testSpeeds(): void {
   const expected: Record<number, Record<BrickSpeedClass, number>> = {
-    1: { SLOW: 3, MEDIUM: 4, FAST: 5, RUSH: 6 },
-    5: { SLOW: 6.6, MEDIUM: 8.2666666667, FAST: 9.9333333333, RUSH: 11.6 },
-    10: { SLOW: 11.1, MEDIUM: 13.6, FAST: 16.1, RUSH: 18.6 },
-    15: { SLOW: 15.6, MEDIUM: 18.9333333333, FAST: 22.2666666667, RUSH: 25.6 },
+    0: { SLOW: 2, MEDIUM: 3, FAST: 4, RUSH: 5 },
+    0.5: { SLOW: 7, MEDIUM: 8.5, FAST: 10.5, RUSH: 13 },
+    1: { SLOW: 12, MEDIUM: 14, FAST: 17, RUSH: 21 },
   };
-  for (const [levelText, speeds] of Object.entries(expected)) {
-    const level = Number(levelText);
+  for (const [progressText, speeds] of Object.entries(expected)) {
+    const progress = Number(progressText);
     let weighted = 0;
     let totalWeight = 0;
     for (const entry of GAME_CONFIG.bricks.speedClassDistribution) {
-      assertNear(resolveBrickDescentSpeed(entry.speedClass, level), speeds[entry.speedClass], `L${level} ${entry.speedClass}`);
-      weighted += resolveBrickDescentSpeed(entry.speedClass, level) * entry.weight;
+      assertNear(resolveBrickDescentSpeed(entry.speedClass, progress), speeds[entry.speedClass], `progress ${progress} ${entry.speedClass}`);
+      weighted += resolveBrickDescentSpeed(entry.speedClass, progress) * entry.weight;
       totalWeight += entry.weight;
     }
-    assertNear(weighted / totalWeight, 3.6 + level - 1, `L${level} weighted average`);
+    const expectedAverage = Object.entries(speeds).reduce((sum, [speedClass, speed]) => {
+      const weight = GAME_CONFIG.bricks.speedClassDistribution.find((entry) => entry.speedClass === speedClass)!.weight;
+      return sum + speed * weight;
+    }, 0) / totalWeight;
+    assertNear(weighted / totalWeight, expectedAverage, `progress ${progress} weighted average`);
   }
 }
 
@@ -745,31 +753,42 @@ function testPaddleSizeWidthsAndBounceAngles(): void {
 }
 
 function testGunCadence(): void {
-  const state = createInitialGameState();
-  state.brickField.columns.forEach((column) => column.splice(0));
-  addBrick(state, makeBrick('entry-blocker', 42, 8));
-  state.powers.levels.GUN = 5;
-  state.powers.gunVolleysRemaining = 5;
-  const input = { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 };
-  const volleyTimes: number[] = [];
-  let priorProjectileCount = 0;
-  for (let step = 0; step < 120; step += 1) {
-    stepSimulation(state, input, 1 / 120, 1 / 120);
-    if (state.projectiles.length > priorProjectileCount) {
-      volleyTimes.push(step / 120);
-      priorProjectileCount = state.projectiles.length;
+  for (let level = 1; level <= 5; level += 1) {
+    const state = createInitialGameState();
+    state.brickField.columns.forEach((column) => column.splice(0));
+    addBrick(state, makeBrick('entry-blocker', 42, 8));
+    state.paddle.x = 600;
+    state.paddle.width = 240;
+    state.powers.levels.GUN = level;
+    const spec = getGunSpec(level);
+    state.powers.gunShotsRemaining = spec.shots;
+    const input = { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 };
+    const shotTimes: number[] = [];
+    let priorProjectileCount = 0;
+    for (let step = 0; step < 120; step += 1) {
+      stepSimulation(state, input, 1 / 120, 1 / 120);
+      if (state.projectiles.length > priorProjectileCount) {
+        shotTimes.push(step / 120);
+        priorProjectileCount = state.projectiles.length;
+      }
+      if (state.powers.gunReloadSeconds > 0) break;
     }
-    if (state.powers.gunReloadSeconds > 0) break;
+    assert(state.projectiles.length === spec.shots, `Gun Lv${level} shot count`);
+    assert(state.projectiles.every(({ damage }) => damage === 1), `Gun Lv${level} projectile damage`);
+    const mountOffset = state.paddle.width / 2 - GAME_CONFIG.powers.gunMountInset;
+    const expectedXs = level < 5
+      ? Array(spec.shots).fill(state.paddle.x)
+      : spec.origins.map((origin) => state.paddle.x + (origin === 'LEFT' ? -mountOffset : mountOffset));
+    state.projectiles.forEach((projectile, index) =>
+      assertNear(projectile.x, expectedXs[index], `Gun Lv${level} shot ${index + 1} origin`));
+    for (let index = 1; index < shotTimes.length; index += 1) {
+      assert(
+        Math.abs(shotTimes[index] - shotTimes[index - 1] - spec.shotIntervalSeconds) <= GAME_CONFIG.fixedStepSeconds + 1e-9,
+        `Gun Lv${level} shot interval ${index} exceeded fixed-step tolerance`,
+      );
+    }
+    assertNear(state.powers.gunReloadSeconds, spec.reloadSeconds, `Gun Lv${level} reload duration`);
   }
-  assert(state.projectiles.length === 10, 'Gun Lv5 did not fire ten bullets');
-  assert(volleyTimes.length === 5, 'Gun Lv5 did not fire five volleys');
-  for (let index = 1; index < volleyTimes.length; index += 1) {
-    assert(
-      Math.abs(volleyTimes[index] - volleyTimes[index - 1] - 0.1) <= GAME_CONFIG.fixedStepSeconds + 1e-9,
-      `Gun volley interval ${index} exceeded fixed-step tolerance`,
-    );
-  }
-  assertNear(state.powers.gunReloadSeconds, 4, 'Gun reload duration');
 }
 
 function testMissileTargetPriority(): void {
@@ -806,6 +825,7 @@ function collectMissileLaunches(level: number, paddleWidth = 200): Array<{ time:
 
 function testMissileLaunchPositionsAndCadence(): void {
   for (const level of [1, 2, 3, 4, 5]) {
+    assertNear(getMissileSpec(level).reloadSeconds, 12, `Missile Lv${level} canonical reload`);
     const launches = collectMissileLaunches(level);
     const expectedOffsets = GAME_CONFIG.powers.missileLaunchOffsets.slice(0, level);
     assert(launches.length === level, `Missile Lv${level} launch count mismatch`);

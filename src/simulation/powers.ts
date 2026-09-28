@@ -37,7 +37,7 @@ export interface RunPowerState {
   splitTimerSeconds: number;
   gunShotCooldownSeconds: number;
   gunReloadSeconds: number;
-  gunVolleysRemaining: number;
+  gunShotsRemaining: number;
   missileLaunchCooldownSeconds: number;
   missileReloadSeconds: number;
   missilesRemainingInVolley: number;
@@ -47,9 +47,9 @@ export interface RunPowerState {
 export const POWER_DEFINITIONS: readonly PowerDefinition[] = [
   {
     id: 'GUN', name: 'GUN', enabledInOfferPool: true,
-    describeCurrent: (level) => level === 1
-      ? `${getGunSpec(level).projectilesPerVolley} guns automatically fire upward from the paddle.`
-      : `Fires ${getGunSpec(level).volleys} volleys before reloading.`,
+    describeCurrent: (level) => level < GAME_CONFIG.powers.gunAlternatingPortsLevel
+      ? `Fires ${getGunSpec(level).shots} center shot${getGunSpec(level).shots === 1 ? '' : 's'} before reloading.`
+      : `Fires ${getGunSpec(level).shots} alternating left/right shots before reloading.`,
   },
   {
     id: 'PIERCING_BALL', name: 'PIERCING BALL', enabledInOfferPool: true,
@@ -106,7 +106,7 @@ export function createRunPowerState(): RunPowerState {
     rerollsRemaining: GAME_CONFIG.powers.startingRerolls,
     bansRemaining: GAME_CONFIG.powers.startingBans, bannedPowerIds: new Set<PowerId>(),
     pendingSelections: 0, currentChoices: [], offerGeneratorState: GAME_CONFIG.powers.offerSeed >>> 0,
-    splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunVolleysRemaining: 0,
+    splitTimerSeconds: 0, gunShotCooldownSeconds: 0, gunReloadSeconds: 0, gunShotsRemaining: 0,
     missileLaunchCooldownSeconds: 0, missileReloadSeconds: 0,
     missilesRemainingInVolley: 0, missileLaunchIndex: 0,
   };
@@ -234,7 +234,7 @@ export function acquirePower(state: GameState, id: PowerId): boolean {
     const maximumX = GAME_CONFIG.playfield.right - state.paddle.width / 2;
     state.paddle.x = Math.max(minimumX, Math.min(maximumX, state.paddle.x));
   } else if (id === 'GUN' && oldLevel === 0) {
-    state.powers.gunVolleysRemaining = getGunSpec(newLevel).volleys;
+    state.powers.gunShotsRemaining = getGunSpec(newLevel).shots;
     state.powers.gunShotCooldownSeconds = 0;
   } else if (id === 'SPLITTING_BALL' && oldLevel === 0) {
     const spec = getSplitSpec(newLevel);

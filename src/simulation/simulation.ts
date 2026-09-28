@@ -3,7 +3,7 @@ import { advanceBrickField, type BrickState } from './brickField';
 import { recordBossDamage, recordBossSpawned, updateBossDirector, updateBossPresentation } from './boss';
 import {
   advanceBrickPressureAssist,
-  getEffectiveBrickSpeedLevel,
+  getEffectiveBrickSpeedProgress,
   recordBallPaddleContact,
 } from './brickPressureAssist';
 import {
@@ -36,7 +36,7 @@ import {
   getSplitSpec,
   getWindSpec,
 } from './gameplayRules';
-import { getBrickDensityDifficultyLevel, getVirtualDifficultyLevel } from './survivalDifficulty';
+import { getBrickSpeedProgress } from './survivalDifficulty';
 
 export interface SimulationInput {
   movementAxis: number;
@@ -306,22 +306,18 @@ function triggerIceBallElementalProc(
   });
 }
 
-function spawnGunVolley(state: GameState): void {
+function spawnGunShot(state: GameState, origin: 'LEFT' | 'RIGHT' | 'CENTER'): void {
   const spec = getGunSpec(getPowerLevel(state.powers, 'GUN'));
   const halfWidth = state.paddle.width / 2;
   const inset = Math.min(GAME_CONFIG.powers.gunMountInset, halfWidth);
   const mountOffset = halfWidth - inset;
-  const projectileXs = spec.projectilesPerVolley <= 1
-    ? [state.paddle.x]
-    : Array.from({ length: spec.projectilesPerVolley }, (_, index) =>
-      state.paddle.x - mountOffset + index * mountOffset * 2 / (spec.projectilesPerVolley - 1));
-  for (const x of projectileXs) {
-    state.projectiles.push({
-      id: state.nextProjectileId++, kind: 'GUN', x,
-      y: state.paddle.y - state.paddle.height / 2,
-      velocity: { x: 0, y: -spec.projectileSpeed }, damage: spec.projectileDamage,
-    });
-  }
+  const x = origin === 'CENTER' ? state.paddle.x
+    : state.paddle.x + (origin === 'LEFT' ? -mountOffset : mountOffset);
+  state.projectiles.push({
+    id: state.nextProjectileId++, kind: 'GUN', x,
+    y: state.paddle.y - state.paddle.height / 2,
+    velocity: { x: 0, y: -spec.projectileSpeed }, damage: spec.projectileDamage,
+  });
 }
 
 function updateGun(state: GameState, deltaSeconds: number): void {
@@ -331,14 +327,15 @@ function updateGun(state: GameState, deltaSeconds: number): void {
   const powers = state.powers;
   if (powers.gunReloadSeconds > 0) {
     powers.gunReloadSeconds = Math.max(0, powers.gunReloadSeconds - deltaSeconds);
-    if (powers.gunReloadSeconds === 0) powers.gunVolleysRemaining = spec.volleys;
+    if (powers.gunReloadSeconds === 0) powers.gunShotsRemaining = spec.shots;
     return;
   }
   powers.gunShotCooldownSeconds = Math.max(0, powers.gunShotCooldownSeconds - deltaSeconds);
-  if (powers.gunVolleysRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
-  spawnGunVolley(state);
-  powers.gunVolleysRemaining -= 1;
-  if (powers.gunVolleysRemaining > 0) powers.gunShotCooldownSeconds = spec.shotIntervalSeconds;
+  if (powers.gunShotsRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
+  const shotIndex = spec.shots - powers.gunShotsRemaining;
+  spawnGunShot(state, spec.origins[shotIndex] ?? 'CENTER');
+  powers.gunShotsRemaining -= 1;
+  if (powers.gunShotsRemaining > 0) powers.gunShotCooldownSeconds = spec.shotIntervalSeconds;
   else powers.gunReloadSeconds = spec.reloadSeconds;
 }
 
@@ -866,16 +863,16 @@ export function stepSimulation(
   }
   updatePaddle(state, input, playerDeltaSeconds);
   advanceBrickPressureAssist(state.brickPressureAssist, worldDeltaSeconds);
-  const virtualDifficultyLevel = getVirtualDifficultyLevel(state.survivalTimeSeconds);
-  const effectiveBrickSpeedLevel = getEffectiveBrickSpeedLevel(
-    virtualDifficultyLevel,
+  const nominalBrickSpeedProgress = getBrickSpeedProgress(state.survivalTimeSeconds);
+  const effectiveBrickSpeedProgress = getEffectiveBrickSpeedProgress(
+    nominalBrickSpeedProgress,
     state.brickPressureAssist,
   );
   if (advanceBrickField(
     state.brickField,
     worldDeltaSeconds,
-    getBrickDensityDifficultyLevel(state.survivalTimeSeconds),
-    effectiveBrickSpeedLevel,
+    state.progression.level,
+    effectiveBrickSpeedProgress,
     {
       onFrozenBrickContact: (contact) => handleFrozenBrickContact(state, contact),
       onPendingFreezeReady: (brick) => commitPendingFreeze(brick),

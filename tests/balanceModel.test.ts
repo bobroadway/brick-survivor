@@ -8,14 +8,19 @@ import {
   getFireMaximumTargets,
   getGunMaxDps,
   getMissileMaxDps,
-  getModeledBrickSpeedLevel,
+  getModeledBrickSpeedProgress,
   getMultiballSpeedMultiplier,
   getSplitBallCount,
   getWeightedAverageSpeed,
   getWindMaximumTargets,
 } from '../src/balance/model';
 import { GAME_CONFIG } from '../src/simulation/config';
-import { getBrickOccupancyRangeForRules, getVirtualDifficultyLevelForRules } from '../src/simulation/gameplayRules';
+import {
+  getBrickOccupancyRangeForRules,
+  getBrickSpeedProgressForRules,
+  getMissileSpec,
+  getSpeedRampEndSecondsForRules,
+} from '../src/simulation/gameplayRules';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -36,21 +41,58 @@ assert(Object.values(defaults.powers).every((level) => level === 0), 'Power defa
 const early = cloneBalanceSettings(defaults); early.timeSeconds = 0;
 const middle = cloneBalanceSettings(defaults); middle.timeSeconds = 6 * 60;
 const late = cloneBalanceSettings(defaults); late.timeSeconds = 12 * 60;
-assert(getDerivedDensity(early) < getDerivedDensity(middle), 'Time-driven density did not rise during ramp');
-assert(getDerivedDensity(middle) < getDerivedDensity(late), 'Time-driven density did not reach enrage');
-const middleLevel = getVirtualDifficultyLevelForRules(middle.timeSeconds, {
-  easyEndSeconds: middle.difficulty.easyEndSeconds,
-  rampEndSeconds: middle.difficulty.enrageStartSeconds,
-  winSeconds: middle.difficulty.winSeconds,
-  rampStartLevel: middle.difficulty.rampStartLevel,
-  rampEndLevel: middle.difficulty.rampEndLevel,
+for (const timestamp of [60, 5 * 60, 10 * 60, 14 * 60]) {
+  const snapshot = cloneBalanceSettings(defaults); snapshot.timeSeconds = timestamp;
+  near(getDerivedDensity(snapshot), getDerivedDensity(defaults), `Time ${timestamp}s changed density`);
+}
+const middleProgress = getBrickSpeedProgressForRules(middle.timeSeconds, {
+  easyEndSeconds: middle.speedTiming.easyEndSeconds,
+  winSeconds: middle.speedTiming.winSeconds,
+  maxSpeedLeadSeconds: middle.speedTiming.maxSpeedLeadSeconds,
 });
-const middleRange = getBrickOccupancyRangeForRules(middleLevel, middle.density);
-near(getDerivedDensity(middle), (middleRange.minimum + middleRange.maximum) / 2,
+const defaultRange = getBrickOccupancyRangeForRules(middle.playerLevel, middle.density);
+near(getDerivedDensity(middle), (defaultRange.minimum + defaultRange.maximum) / 2,
   'Balance density was not the expectation of the canonical legal range');
 const earlyReport = calculateBalance(early);
 const lateReport = calculateBalance(late);
 assert(lateReport.weightedAverageSpeed > earlyReport.weightedAverageSpeed, 'Time-driven speed did not rise');
+assert(middleProgress > 0 && middleProgress < 1, 'Middle timestamp did not advance speed progress');
+const speedSamples = [0, 30, 5 * 60, 10 * 60, 14 * 60, 15 * 60]
+  .map((timeSeconds) => {
+    const snapshot = cloneBalanceSettings(defaults); snapshot.timeSeconds = timeSeconds;
+    return calculateBalance(snapshot).weightedAverageSpeed;
+  });
+for (let index = 1; index < speedSamples.length; index += 1) {
+  assert(speedSamples[index] >= speedSamples[index - 1], 'Time-driven speed curve was not monotonic');
+}
+near(speedSamples[0], speedSamples[1], 'Easy-start speed was not held through 0:30');
+
+const lowLevel = cloneBalanceSettings(middle); lowLevel.playerLevel = lowLevel.density.startLevel;
+const midPlayerLevel = cloneBalanceSettings(middle);
+midPlayerLevel.playerLevel = (midPlayerLevel.density.startLevel + midPlayerLevel.density.fullLevel) / 2;
+const fullLevel = cloneBalanceSettings(middle); fullLevel.playerLevel = fullLevel.density.fullLevel;
+const aboveFullLevel = cloneBalanceSettings(middle); aboveFullLevel.playerLevel = aboveFullLevel.density.fullLevel + 10;
+assert(getDerivedDensity(lowLevel) < getDerivedDensity(midPlayerLevel), 'Player level did not increase density');
+assert(getDerivedDensity(midPlayerLevel) < getDerivedDensity(fullLevel), 'Density did not reach full occupancy by level');
+near(getDerivedDensity(fullLevel), 20, 'Full density level');
+near(getDerivedDensity(aboveFullLevel), 20, 'Above-full density level');
+const level25 = cloneBalanceSettings(middle); level25.playerLevel = 25;
+assert(getDerivedDensity(level25) < 20, 'Level 25 reached full density too early');
+assert(defaults.density.fullLevel === 26, 'Balance Lab did not inherit density full level 26');
+near(calculateBalance(lowLevel).weightedAverageSpeed, calculateBalance(aboveFullLevel).weightedAverageSpeed,
+  'Player level changed speed at fixed time');
+
+const beforeTwelve = cloneBalanceSettings(lowLevel); beforeTwelve.timeSeconds = 12 * 60 - 0.001;
+const afterTwelve = cloneBalanceSettings(lowLevel); afterTwelve.timeSeconds = 12 * 60 + 0.001;
+near(getDerivedDensity(beforeTwelve), getDerivedDensity(afterTwelve), '12:00 caused a density jump');
+assert(calculateBalance(afterTwelve).weightedAverageSpeed > calculateBalance(beforeTwelve).weightedAverageSpeed,
+  'Speed did not continue smoothly through 12:00');
+
+const earlyHighLevel = cloneBalanceSettings(defaults); earlyHighLevel.timeSeconds = 60; earlyHighLevel.playerLevel = 30;
+const lateLowLevel = cloneBalanceSettings(defaults); lateLowLevel.timeSeconds = 14 * 60; lateLowLevel.playerLevel = 1;
+assert(getDerivedDensity(earlyHighLevel) > getDerivedDensity(lateLowLevel), 'Early high-level density was not higher');
+assert(calculateBalance(earlyHighLevel).weightedAverageSpeed < calculateBalance(lateLowLevel).weightedAverageSpeed,
+  'Late low-level speed was not higher');
 near(getWeightedAverageSpeed({ SLOW: 1, MEDIUM: 2, FAST: 3, RUSH: 4 }, { SLOW: .25, MEDIUM: .25, FAST: .25, RUSH: .25 }), 2.5,
   'Weighted speed average');
 
@@ -67,8 +109,11 @@ assert(earlyReport.ballContactsPerSecond.max > earlyReport.ballContactsPerSecond
   'Maximum Ball contact rate was not a ceiling');
 
 assert(getGunMaxDps(5) >= getGunMaxDps(4) && getGunMaxDps(1) > 0, 'Gun cadence math was non-monotonic');
-near(getGunMaxDps(1), 2 / GAME_CONFIG.powers.gunReloadSeconds, 'Gun Lv1 cadence');
+near(getGunMaxDps(1), 1 / GAME_CONFIG.powers.gunReloadSeconds, 'Gun Lv1 cadence');
 near(getMissileMaxDps(1), 1 / GAME_CONFIG.powers.missileReloadSeconds, 'Missile Lv1 cadence');
+for (let level = 1; level <= GAME_CONFIG.powers.maxLevel; level += 1) {
+  assert(getMissileSpec(level).reloadSeconds === 12, `Missile Lv${level} did not use canonical 12-second reload`);
+}
 assert(getMissileMaxDps(5) >= getMissileMaxDps(4), 'Missile cadence math was non-monotonic');
 assert(getElectricMaximumTargets(5) === 10, 'Electric Lv5 maximum target count');
 assert(getFireMaximumTargets(5) === 26, 'Fire Lv5 footprint maximum');
@@ -97,24 +142,43 @@ for (const id of ['ELECTRIC_BALL', 'FIRE_BALL', 'WIND_BALL'] as const) {
   assert(highPower.contribution.likely >= lowPower.contribution.likely, `${id} fell as density increased`);
 }
 
-const faster = cloneBalanceSettings(defaults); faster.speed.averageOverride = calculateBalance(defaults).weightedAverageSpeed * 1.5;
+const faster = cloneBalanceSettings(defaults);
+for (const speedClass of Object.keys(faster.speed.max) as Array<keyof typeof faster.speed.max>) {
+  faster.speed.start[speedClass] *= 1.5;
+  faster.speed.max[speedClass] *= 1.5;
+}
 assert(calculateBalance(faster).boardHpPerSecond.likely >= calculateBalance(defaults).boardHpPerSecond.likely,
   'Higher brick speed reduced incoming HP/s');
 
 const assisted = cloneBalanceSettings(defaults);
 assisted.assumptions.trappedBallAssistActive = true;
 assisted.assumptions.trappedBallInactivitySeconds = assisted.pressureAssist.graceSeconds + 3;
-assert(getModeledBrickSpeedLevel(assisted) < getModeledBrickSpeedLevel(defaults),
+assert(getModeledBrickSpeedProgress(assisted) < getModeledBrickSpeedProgress(defaults),
   'Explicit trapped-ball assumption did not apply canonical pressure assistance');
 
 const slowerBoss = cloneBalanceSettings(defaults);
 slowerBoss.boss.speedMultiplier *= 0.5;
 assert(calculateBalance(slowerBoss).boss.cruiseSpeed < calculateBalance(defaults).boss.cruiseSpeed,
   'Boss speed multiplier input did not affect the Boss report');
+const defaultSurvivalRules = {
+  easyEndSeconds: defaults.speedTiming.easyEndSeconds,
+  winSeconds: defaults.speedTiming.winSeconds,
+  maxSpeedLeadSeconds: defaults.speedTiming.maxSpeedLeadSeconds,
+};
+near(getSpeedRampEndSecondsForRules(defaultSurvivalRules), 840, 'Balance speed-ramp end');
+const finalBossReport = cloneBalanceSettings(defaults); finalBossReport.timeSeconds = 840;
+assert(calculateBalance(finalBossReport).boss.guaranteedFinalBossDue,
+  'Balance report did not represent the guaranteed final Boss separately');
 
 const deterministicA = calculateBalance(defaults);
 const deterministicB = calculateBalance(cloneBalanceSettings(defaults));
 assert(JSON.stringify(deterministicA) === JSON.stringify(deterministicB), 'Monte Carlo output was not deterministic');
 const reset = createGameDefaultBalanceSettings();
-assert(reset.timeSeconds === 360 && reset.powers.GUN === 0 && reset.density.override === null,
+assert(reset.timeSeconds === 360 && reset.playerLevel === GAME_CONFIG.progression.startingLevel
+  && reset.powers.GUN === 0 && reset.density.override === null,
   'Reset defaults were not restored');
+assert(JSON.stringify(reset.speed.start) === JSON.stringify({ SLOW: 2, MEDIUM: 3, FAST: 4, RUSH: 5 }),
+  'Reset did not restore canonical starting class speeds');
+assert(JSON.stringify(reset.speed.max) === JSON.stringify({ SLOW: 12, MEDIUM: 14, FAST: 17, RUSH: 21 }),
+  'Reset did not restore canonical maximum class speeds');
+assert(reset.boss.entranceSpeed === 27, 'Reset did not restore canonical Boss entrance speed');

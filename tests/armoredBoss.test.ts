@@ -1,4 +1,9 @@
-import { recordOrdinaryBrickDestruction, updateBossPresentation } from '../src/simulation/boss';
+import {
+  recordBossRemoved,
+  recordOrdinaryBrickDestruction,
+  updateBossDirector,
+  updateBossPresentation,
+} from '../src/simulation/boss';
 import {
   advanceBrickField,
   createBrickField,
@@ -76,22 +81,22 @@ function verifyBossDirectorAndEntity(): void {
   assert(boss.hp === 25 && boss.xpValue === 50, 'boss HP/XP tuning was incorrect');
   assert(selectMissileTarget(boss.x, [boss], new Set()) === undefined, 'missile intentionally targeted boss');
   const originalY = boss.y;
-  advanceBrickField(state.brickField, 1, 1, 1);
+  advanceBrickField(state.brickField, 1, 1, 0);
   assert(Math.abs(boss.y - originalY - getMaximumConfiguredRushSpeed()) < 1e-9,
     'boss did not use maximum configured RUSH speed while emerging');
-  while (boss.bossArrivalPhase === 'RUSH') advanceBrickField(state.brickField, 1 / 120, 1, 1);
+  while (boss.bossArrivalPhase === 'RUSH') advanceBrickField(state.brickField, 1 / 120, 1, 0);
   assert(boss.y === GAME_CONFIG.bricks.fieldTopY && boss.bossArrivalPhase === 'DECELERATING',
     'boss did not begin decelerating at full emergence');
   const rushSpeed = getMaximumConfiguredRushSpeed();
-  assert(Math.abs(getBossDescentSpeed(boss, 1) - rushSpeed) < 1e-9,
+  assert(Math.abs(getBossDescentSpeed(boss, 0) - rushSpeed) < 1e-9,
     'boss deceleration did not begin at RUSH speed');
-  advanceBrickField(state.brickField, 0.5, 1, 1);
-  const midwaySpeed = getBossDescentSpeed(boss, 1);
-  const cruiseSpeed = resolveBrickDescentSpeed('SLOW', 1) * 0.5;
+  advanceBrickField(state.brickField, 0.5, 1, 0);
+  const midwaySpeed = getBossDescentSpeed(boss, 0);
+  const cruiseSpeed = resolveBrickDescentSpeed('SLOW', 0) * 0.5;
   assert(midwaySpeed < rushSpeed && midwaySpeed > cruiseSpeed, 'boss deceleration was not smooth/monotonic');
-  advanceBrickField(state.brickField, 0.5, 1, 1);
+  advanceBrickField(state.brickField, 0.5, 1, 0);
   assert(boss.bossArrivalPhase === 'CRUISE'
-    && Math.abs(getBossDescentSpeed(boss, 1) - cruiseSpeed) < 1e-9,
+    && Math.abs(getBossDescentSpeed(boss, 0) - cruiseSpeed) < 1e-9,
   'boss did not settle at current half-SLOW speed');
   applyBrickDamage(state, boss, 3, 'GUN');
   assert(boss.hp === 22 && boss.displayHp === 25, 'boss actual/display HP did not separate');
@@ -130,6 +135,44 @@ function verifyFrozenBossShatter(): void {
     'frozen Boss did not create the 5x5 shatter visual');
 }
 
+function verifyGuaranteedFinalBoss(): void {
+  const triggerTime = GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.brickSpeed.maxSpeedLeadSeconds;
+  const available = createInitialGameState();
+  available.survivalTimeSeconds = triggerTime;
+  updateBossDirector(available);
+  assert(available.bossDirector.finalBossTriggered, 'final Boss trigger was not recorded');
+  assert(available.bossDirector.bossQueued && !available.bossDirector.finalBossPending,
+    'final Boss was not queued immediately when no Boss was active');
+  const queuedColumn = available.bossDirector.queuedStartColumn;
+  updateBossDirector(available);
+  assert(available.bossDirector.queuedStartColumn === queuedColumn,
+    'final Boss trigger queued a duplicate Boss');
+
+  const alreadyQueued = createInitialGameState();
+  alreadyQueued.survivalTimeSeconds = triggerTime;
+  alreadyQueued.bossDirector.bossQueued = true;
+  alreadyQueued.bossDirector.queuedStartColumn = 6;
+  updateBossDirector(alreadyQueued);
+  assert(alreadyQueued.bossDirector.finalBossPending
+    && alreadyQueued.bossDirector.queuedStartColumn === 6,
+  'guaranteed final Boss displaced an older queued Boss');
+
+  const blocked = createInitialGameState();
+  blocked.survivalTimeSeconds = triggerTime;
+  blocked.bossDirector.activeBossId = 'boss:existing';
+  updateBossDirector(blocked);
+  assert(blocked.bossDirector.finalBossPending && !blocked.bossDirector.bossQueued,
+    'active Boss did not leave the guaranteed final Boss pending');
+  recordBossRemoved(blocked, {
+    id: 'boss:existing', rowId: 999, column: 8, x: 520, y: 100, width: 176, height: 68,
+    speedClass: 'SLOW', hp: 0, xpValue: 50, kind: 'BOSS',
+  });
+  updateBossDirector(blocked);
+  assert(blocked.bossDirector.bossQueued && !blocked.bossDirector.finalBossPending,
+    'pending final Boss did not queue after the active Boss was removed');
+}
+
 verifyArmoredGeneration();
 verifyBossDirectorAndEntity();
 verifyFrozenBossShatter();
+verifyGuaranteedFinalBoss();

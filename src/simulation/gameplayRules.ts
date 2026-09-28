@@ -4,21 +4,15 @@ export type BrickSpeedClass = 'SLOW' | 'MEDIUM' | 'FAST' | 'RUSH';
 export const BRICK_SPEED_CLASSES: readonly BrickSpeedClass[] = ['SLOW', 'MEDIUM', 'FAST', 'RUSH'];
 
 export interface BrickSpeedRuleParameters {
-  startingLevel: number;
-  baseAverage: number;
-  averageGrowthPerLevel: number;
-  baseRange: number;
-  rangeGrowthPerLevel: number;
-  classPositions: Record<BrickSpeedClass, number>;
+  startSpeeds: Record<BrickSpeedClass, number>;
+  maxSpeeds: Record<BrickSpeedClass, number>;
   classWeights: Record<BrickSpeedClass, number>;
 }
 
-export interface SurvivalRuleParameters {
+export interface BrickSpeedTimingRuleParameters {
   easyEndSeconds: number;
-  rampEndSeconds: number;
   winSeconds: number;
-  rampStartLevel: number;
-  rampEndLevel: number;
+  maxSpeedLeadSeconds: number;
 }
 
 export interface DensityRuleParameters {
@@ -32,11 +26,11 @@ export interface DensityRuleParameters {
 
 export interface OccupancyRange { minimum: number; maximum: number }
 export interface RelativeCell { column: number; row: number }
-export interface PressureAssistRuleParameters { graceSeconds: number; maximumLevels: number; levelsPerSecond: number }
+export interface PressureAssistRuleParameters { graceSeconds: number; maximumProgress: number; progressPerSecond: number }
 export interface PowerRuleParameters {
   maxLevel: number;
-  gunVolleysByLevel: readonly number[];
-  gunProjectilesPerVolley: number;
+  gunShotsByLevel: readonly number[];
+  gunAlternatingPortsLevel: number;
   gunShotIntervalSeconds: number;
   gunReloadSeconds: number;
   gunProjectileDamage: number;
@@ -78,28 +72,20 @@ export interface PowerRuleParameters {
   iceCollisionCapacityByLevel: readonly number[];
   iceDirectShatterSafetyMaximumSeconds: number;
 }
-export interface PressureAssistRuleParameters { graceSeconds: number; maximumLevels: number; levelsPerSecond: number }
-
 export function getCanonicalBrickSpeedRuleParameters(): BrickSpeedRuleParameters {
   return {
-    startingLevel: GAME_CONFIG.progression.startingLevel,
-    baseAverage: GAME_CONFIG.difficulty.baseAverageBrickSpeed,
-    averageGrowthPerLevel: GAME_CONFIG.difficulty.averageSpeedGrowthPerLevel,
-    baseRange: GAME_CONFIG.difficulty.baseSpeedRange,
-    rangeGrowthPerLevel: GAME_CONFIG.difficulty.speedRangeGrowthPerLevel,
-    classPositions: { ...GAME_CONFIG.difficulty.speedClassRangePositions },
+    startSpeeds: { ...GAME_CONFIG.brickSpeed.start },
+    maxSpeeds: { ...GAME_CONFIG.brickSpeed.max },
     classWeights: Object.fromEntries(GAME_CONFIG.bricks.speedClassDistribution
       .map(({ speedClass, weight }) => [speedClass, weight])) as Record<BrickSpeedClass, number>,
   };
 }
 
-export function getCanonicalSurvivalRuleParameters(): SurvivalRuleParameters {
+export function getCanonicalBrickSpeedTimingRuleParameters(): BrickSpeedTimingRuleParameters {
   return {
-    easyEndSeconds: GAME_CONFIG.survival.easyStartDurationSeconds,
-    rampEndSeconds: GAME_CONFIG.survival.rampEndSeconds,
+    easyEndSeconds: GAME_CONFIG.brickSpeed.easyStartSeconds,
     winSeconds: GAME_CONFIG.survival.winTimeSeconds,
-    rampStartLevel: GAME_CONFIG.survival.rampStartDifficultyLevel,
-    rampEndLevel: GAME_CONFIG.survival.rampEndDifficultyLevel,
+    maxSpeedLeadSeconds: GAME_CONFIG.brickSpeed.maxSpeedLeadSeconds,
   };
 }
 
@@ -114,33 +100,24 @@ export function getCanonicalDensityRuleParameters(): DensityRuleParameters {
   };
 }
 
-export function getVirtualDifficultyLevelForRules(timeSeconds: number, rules: SurvivalRuleParameters): number {
-  const progress = Math.max(0, Math.min(1,
-    (timeSeconds - rules.easyEndSeconds) / Math.max(1e-6, rules.rampEndSeconds - rules.easyEndSeconds)));
-  return rules.rampStartLevel + (rules.rampEndLevel - rules.rampStartLevel) * progress;
+export function getBrickSpeedProgressForRules(timeSeconds: number, rules: BrickSpeedTimingRuleParameters): number {
+  const speedRampEndSeconds = getSpeedRampEndSecondsForRules(rules);
+  return Math.max(0, Math.min(1,
+    (timeSeconds - rules.easyEndSeconds) / Math.max(1e-6, speedRampEndSeconds - rules.easyEndSeconds)));
 }
 
-export function getTargetAverageBrickSpeedForRules(level: number, rules: BrickSpeedRuleParameters): number {
-  const normalizedLevel = Math.max(rules.startingLevel, level);
-  return rules.baseAverage + (normalizedLevel - rules.startingLevel) * rules.averageGrowthPerLevel;
-}
-
-export function getBrickSpeedRangeForRules(level: number, rules: BrickSpeedRuleParameters): number {
-  const normalizedLevel = Math.max(rules.startingLevel, level);
-  return rules.baseRange + (normalizedLevel - rules.startingLevel) * rules.rangeGrowthPerLevel;
+export function getSpeedRampEndSecondsForRules(rules: BrickSpeedTimingRuleParameters): number {
+  return Math.max(rules.easyEndSeconds, rules.winSeconds - rules.maxSpeedLeadSeconds);
 }
 
 export function resolveBrickDescentSpeedForRules(
   speedClass: BrickSpeedClass,
-  level: number,
+  progress: number,
   rules: BrickSpeedRuleParameters,
 ): number {
-  const totalWeight = Object.values(rules.classWeights).reduce((sum, weight) => sum + weight, 0) || 1;
-  const weightedPosition = (Object.keys(rules.classWeights) as BrickSpeedClass[])
-    .reduce((sum, key) => sum + rules.classPositions[key] * rules.classWeights[key], 0) / totalWeight;
-  const range = getBrickSpeedRangeForRules(level, rules);
-  const slow = getTargetAverageBrickSpeedForRules(level, rules) - weightedPosition * range;
-  return slow + rules.classPositions[speedClass] * range;
+  const clampedProgress = Math.max(0, Math.min(1, progress));
+  return rules.startSpeeds[speedClass]
+    + (rules.maxSpeeds[speedClass] - rules.startSpeeds[speedClass]) * clampedProgress;
 }
 
 export function getBrickOccupancyRangeForRules(level: number, rules: DensityRuleParameters): OccupancyRange {
@@ -156,19 +133,19 @@ export function canSpeedClassSpawnArmored(speedClass: BrickSpeedClass): boolean 
   return speedClass === 'SLOW' || speedClass === 'MEDIUM';
 }
 
-export function getPressureAssistLevelAfterInactivity(
+export function getPressureAssistProgressAfterInactivity(
   inactivitySeconds: number,
   rules: PressureAssistRuleParameters,
 ): number {
-  return Math.min(rules.maximumLevels,
-    Math.max(0, inactivitySeconds - rules.graceSeconds) * rules.levelsPerSecond);
+  return Math.min(rules.maximumProgress,
+    Math.max(0, inactivitySeconds - rules.graceSeconds) * rules.progressPerSecond);
 }
 
-export function getPressureAssistTargetLevel(
+export function getPressureAssistTargetProgress(
   inactivitySeconds: number,
   rules: PressureAssistRuleParameters,
 ): number {
-  return inactivitySeconds < rules.graceSeconds ? 0 : rules.maximumLevels;
+  return inactivitySeconds < rules.graceSeconds ? 0 : rules.maximumProgress;
 }
 
 function levelIndex(level: number, maxLevel: number): number {
@@ -176,9 +153,13 @@ function levelIndex(level: number, maxLevel: number): number {
 }
 
 export function getGunSpec(level: number, powers: PowerRuleParameters = GAME_CONFIG.powers) {
+  const shots = level <= 0 ? 0 : powers.gunShotsByLevel[levelIndex(level, powers.maxLevel)] ?? 0;
+  const alternatingPorts = level >= powers.gunAlternatingPortsLevel;
   return {
-    volleys: level <= 0 ? 0 : powers.gunVolleysByLevel[levelIndex(level, powers.maxLevel)] ?? 0,
-    projectilesPerVolley: powers.gunProjectilesPerVolley,
+    shots,
+    origins: Array.from({ length: shots }, (_, index) => alternatingPorts
+      ? (index % 2 === 0 ? 'LEFT' : 'RIGHT')
+      : 'CENTER') as Array<'LEFT' | 'RIGHT' | 'CENTER'>,
     shotIntervalSeconds: powers.gunShotIntervalSeconds,
     reloadSeconds: powers.gunReloadSeconds,
     projectileDamage: powers.gunProjectileDamage,

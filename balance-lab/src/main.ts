@@ -10,7 +10,7 @@ import {
 } from '../../src/balance/model';
 import { POWER_DEFINITIONS, type PowerId } from '../../src/simulation/powers';
 import { GAME_CONFIG } from '../../src/simulation/config';
-import { BRICK_SPEED_CLASSES, canSpeedClassSpawnArmored } from '../../src/simulation/gameplayRules';
+import { BRICK_SPEED_CLASSES, canSpeedClassSpawnArmored, getSpeedRampEndSecondsForRules } from '../../src/simulation/gameplayRules';
 import './style.css';
 
 const app = document.querySelector<HTMLElement>('#app');
@@ -48,13 +48,18 @@ function render(): void {
   settings = clampBalanceSettings(settings);
   const report = calculateBalance(settings);
   const weights = report.normalizedWeights;
+  const speedTimingRules = {
+    easyEndSeconds: settings.speedTiming.easyEndSeconds,
+    winSeconds: settings.speedTiming.winSeconds,
+    maxSpeedLeadSeconds: settings.speedTiming.maxSpeedLeadSeconds,
+  };
   app.innerHTML = `
-    <header><h1>BALANCE LAB</h1>${field({ label: 'TIME', path: 'timeSeconds', value: settings.timeSeconds, kind: 'time' })}<button id="reset">RESET TO GAME DEFAULTS</button><span class="hint">Developer-only deterministic throughput model</span><span id="error" class="error"></span></header>
+    <header><h1>BALANCE LAB</h1>${field({ label: 'TIME', path: 'timeSeconds', value: settings.timeSeconds, kind: 'time' })}${field({ label: 'PLAYER LEVEL', path: 'playerLevel', value: settings.playerLevel })}<button id="reset">RESET TO GAME DEFAULTS</button><span class="hint">Developer-only deterministic throughput model</span><span id="error" class="error"></span></header>
     <div class="layout">
-      <section><h2>GAME PARAMETERS — BOARD / DIFFICULTY</h2><div class="fields">
-        ${field({ label: 'Easy end', path: 'difficulty.easyEndSeconds', value: settings.difficulty.easyEndSeconds, kind: 'time' })}
-        ${field({ label: 'Enrage start', path: 'difficulty.enrageStartSeconds', value: settings.difficulty.enrageStartSeconds, kind: 'time' })}
-        ${field({ label: 'Win time', path: 'difficulty.winSeconds', value: settings.difficulty.winSeconds, kind: 'time' })}
+      <section><h2>GAME PARAMETERS — BOARD / SPEED TIMING</h2><div class="fields">
+        ${field({ label: 'Easy start', path: 'speedTiming.easyEndSeconds', value: settings.speedTiming.easyEndSeconds, kind: 'time' })}
+        ${field({ label: 'Win time', path: 'speedTiming.winSeconds', value: settings.speedTiming.winSeconds, kind: 'time' })}
+        ${field({ label: 'Max-speed lead', path: 'speedTiming.maxSpeedLeadSeconds', value: settings.speedTiming.maxSpeedLeadSeconds, kind: 'time' })}
         ${field({ label: 'Columns', path: 'board.columns', value: settings.board.columns })}
         ${field({ label: 'Board width', path: 'board.logicalWidth', value: settings.board.logicalWidth })}
         ${field({ label: 'Board height', path: 'board.logicalHeight', value: settings.board.logicalHeight })}
@@ -65,7 +70,7 @@ function render(): void {
         ${field({ label: 'Roof Y', path: 'board.roofY', value: settings.board.roofY })}
         ${field({ label: 'Danger Y', path: 'board.dangerY', value: settings.board.dangerY })}
         ${field({ label: 'Loss Y', path: 'board.lossY', value: settings.board.lossY })}
-      </div></section>
+      </div><p class="hint">Current max-speed timestamp: ${time(getSpeedRampEndSecondsForRules(speedTimingRules))}</p></section>
       <section><h2>GAME PARAMETERS — DENSITY / SPEED</h2><div class="fields">
         ${field({ label: 'Density start level', path: 'density.startLevel', value: settings.density.startLevel })}
         ${field({ label: 'Density full level', path: 'density.fullLevel', value: settings.density.fullLevel })}
@@ -73,12 +78,9 @@ function render(): void {
         ${field({ label: 'Start max', path: 'density.startMax', value: settings.density.startMax })}
         ${field({ label: 'Full min', path: 'density.fullMin', value: settings.density.fullMin })}
         ${field({ label: 'Full max', path: 'density.fullMax', value: settings.density.fullMax })}
-        ${field({ label: 'Density override', path: 'density.override', value: settings.density.override, kind: 'auto', title: 'AUTO derives density from TIME.' })}
-        ${field({ label: 'Average override', path: 'speed.averageOverride', value: settings.speed.averageOverride, kind: 'auto', title: 'AUTO uses the configured difficulty curve.' })}
-        ${field({ label: 'Base average', path: 'speed.baseAverage', value: settings.speed.baseAverage })}
-        ${field({ label: 'Average growth', path: 'speed.averageGrowthPerLevel', value: settings.speed.averageGrowthPerLevel })}
-        ${field({ label: 'Base range', path: 'speed.baseRange', value: settings.speed.baseRange })}
-        ${field({ label: 'Range growth', path: 'speed.rangeGrowthPerLevel', value: settings.speed.rangeGrowthPerLevel })}
+        ${field({ label: 'Density override', path: 'density.override', value: settings.density.override, kind: 'auto', title: 'AUTO derives density from PLAYER LEVEL.' })}
+        ${BRICK_SPEED_CLASSES.map(key => field({ label: `Start ${key}`, path: `speed.start.${key}`, value: settings.speed.start[key] })).join('')}
+        ${BRICK_SPEED_CLASSES.map(key => field({ label: `Max ${key}`, path: `speed.max.${key}`, value: settings.speed.max[key] })).join('')}
         ${BRICK_SPEED_CLASSES.map(key => field({ label: `${key} weight`, path: `speed.weights.${key}`, value: settings.speed.weights[key] })).join('')}
       </div><p class="hint">Effective normalized weights: S ${number(weights.SLOW*100,1)}% · M ${number(weights.MEDIUM*100,1)}% · F ${number(weights.FAST*100,1)}% · R ${number(weights.RUSH*100,1)}%</p></section>
       <section><h2>GAME PARAMETERS — BRICK TYPES</h2><div class="fields">
@@ -90,14 +92,15 @@ function render(): void {
         ${field({ label: 'Boss HP', path: 'boss.hp', value: settings.boss.hp })}
         ${field({ label: 'Boss lottery', path: 'boss.lotteryChance', value: settings.boss.lotteryChance, kind: 'percent' })}
         ${field({ label: 'Boss speed ×', path: 'boss.speedMultiplier', value: settings.boss.speedMultiplier })}
+        ${field({ label: 'Boss entrance speed', path: 'boss.entranceSpeed', value: settings.boss.entranceSpeed })}
         ${settings.boss.checkpoints.map((value,index) => field({ label: `Checkpoint ${index+1}`, path: `boss.checkpoints.${index}`, value, kind: 'time' })).join('')}
       </div><p class="hint">Armor remains a modifier on eligible ${BRICK_SPEED_CLASSES.filter(canSpeedClassSpawnArmored).join('/')} bricks. Boss pressure is reported separately from continuous conveyor HP/s.</p></section>
       <section><h2>GAME PARAMETERS — BALL / ASSIST</h2><div class="fields">
         ${field({ label: 'Ball speed', path: 'ball.speed', value: settings.ball.speed })}
         ${field({ label: 'Pressure assist enabled', path: 'pressureAssist.enabled', value: settings.pressureAssist.enabled, kind: 'checkbox' })}
         ${field({ label: 'Assist grace', path: 'pressureAssist.graceSeconds', value: settings.pressureAssist.graceSeconds })}
-        ${field({ label: 'Assist max levels', path: 'pressureAssist.maximumLevels', value: settings.pressureAssist.maximumLevels })}
-        ${field({ label: 'Assist levels/sec', path: 'pressureAssist.levelsPerSecond', value: settings.pressureAssist.levelsPerSecond })}
+        ${field({ label: 'Assist max ramp', path: 'pressureAssist.maximumProgress', value: settings.pressureAssist.maximumProgress, kind: 'percent' })}
+        ${field({ label: 'Assist ramp/sec', path: 'pressureAssist.progressPerSecond', value: settings.pressureAssist.progressPerSecond, kind: 'percent' })}
       </div></section>
       <section class="wide"><h2>POWERS — 0 MEANS NOT OWNED</h2><div class="power-grid">
         ${POWER_DEFINITIONS.map(({id,name}) => `<label class="field"><span>${name}</span><select data-path="powers.${id}" data-kind="number">${Array.from({length:GAME_CONFIG.powers.maxLevel+1},(_,level)=>`<option ${settings.powers[id]===level?'selected':''}>${level}</option>`).join('')}</select></label>`).join('')}
@@ -147,7 +150,7 @@ function renderOutputs(current: BalanceSettings, report: BalanceReport): string 
       ${metric('Formations/s', number(report.formation.formationsPerSecond.likely))}${metric('Generated bricks/s', number(report.formation.generatedBricksPerSecond.likely))}
       ${metric('Average HP/brick', number(report.averageHpPerBrick,3))}${metric('LIKELY BOARD HP/s', number(report.boardHpPerSecond.likely), 'Expected conveyor HP throughput using sampled spatial-frontier speed.')}
       ${metric('MEDIAN BOARD HP/s', number(report.boardHpPerSecond.median))}${metric('MAX BOARD HP/s', number(report.boardHpPerSecond.max), 'Best legal homogeneous speed/HP composition at maximum selected density; impossible RUSH+Armor is excluded.')}
-    </div><p class="hint">Boss: ${boss.applicable ? `checkpoint ${time(boss.checkpoint!)} applicable` : 'no armed checkpoint at selected time'} · cruise ${number(boss.cruiseSpeed)} px/s · arrival ${number(boss.rushArrivalSpeed)} px/s · expected ${number(boss.expectedLotteryKills,1)} qualifying kills · discrete HP ${number(boss.discreteHp,0)} · separate amortized estimate ${number(boss.amortizedHpPerSecond)} HP/s. Spatial pre-gap, clearance, and edge placement are not modeled.</p></section>
+    </div><p class="hint">Boss: normal checkpoints ${current.boss.checkpoints.map(time).join(' / ')} at ${number(current.boss.lotteryChance * 100, 0)}% per qualifying kill · guaranteed final Boss ${time(boss.guaranteedFinalBossTime)}${boss.guaranteedFinalBossDue ? ' (due)' : ''} · cruise ${number(boss.cruiseSpeed)} px/s · max-RUSH arrival ${number(boss.rushArrivalSpeed)} px/s · discrete HP ${number(boss.discreteHp,0)}. Guaranteed Boss is separate from lottery pressure; spatial entry is not modeled.</p></section>
     <section><h2>BASE BALL / SHARED EVENTS</h2><table><thead><tr><th></th><th>MAX</th><th>MEDIAN</th><th>LIKELY</th></tr></thead><tbody>${row('Contacts/s',report.ballContactsPerSecond)}${row('Base Ball DPS',report.baseBallDps)}${row('Elemental proc events/s',report.elementalProcEventsPerSecond)}</tbody></table><p class="hint">Active Balls: ${report.activeBallCount}. Elemental events are shared by Electric, Fire, and Wind and include legal Ball kills, Ice freezes, and direct Ball shatters.</p></section>
     <section><h2>COMBINED BUILD</h2><table><thead><tr><th></th><th>MAX</th><th>MEDIAN</th><th>LIKELY</th></tr></thead><tbody>${row('Base Ball',report.combined.baseBall)}${row('Power contribution',report.combined.powerContribution)}${row('TOTAL PLAYER DPS',report.combined.total)}</tbody></table><div class="metrics">${metric('Likely board HP/s',number(report.boardHpPerSecond.likely))}${metric('Likely player DPS',number(report.combined.total.likely))}${metric('NET PRESSURE',number(report.comparison.likelyNetPressure),'Board HP/s minus player DPS. Positive means unresolved HP accumulation.',)}${metric('MAX net',number(report.comparison.maxNetPressure))}</div><p class="hint">Negative net pressure does not guarantee survival; spatial distribution, trapped trajectories, low fast bricks, and discrete Bosses remain decisive. This is a throughput model.</p></section>
     <section class="wide"><h2>POWER CONTRIBUTIONS — INCREMENTAL UNDER CURRENT BUILD</h2><table><thead><tr><th>POWER</th><th>LV</th><th>MAX DPS</th><th>MEDIAN</th><th>LIKELY</th><th>NOTES</th></tr></thead><tbody>${report.powers.map(power=>`<tr><td>${power.name}</td><td>${power.level}</td><td>${number(power.contribution.max)}</td><td>${number(power.contribution.median)}</td><td>${number(power.contribution.likely)}</td><td>${power.id==='PADDLE_SIZE'?`Direct 0; throughput ×${number(power.throughputMultiplier??1,3)}`:power.id==='ICE_BALL'?`Capacity ${power.iceCollisionCapacity??0}; freeze ${number(power.frozenBricksPerSecond??0)}/s; control ${number(power.pressureReductionHpPerSecond??0)} HP·s/s`:''}</td></tr>`).join('')}</tbody></table></section>

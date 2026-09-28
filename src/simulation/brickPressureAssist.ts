@@ -1,16 +1,16 @@
 import { GAME_CONFIG } from './config';
-import { getPressureAssistTargetLevel } from './gameplayRules';
+import { getPressureAssistTargetProgress } from './gameplayRules';
 
 export interface BrickPressureAssistState {
   timeSinceLastBallPaddleContact: number;
-  brickPressureAssistLevels: number;
+  brickSpeedAssistProgress: number;
   trappedBallSpeedBoost: number;
 }
 
 export function createBrickPressureAssistState(): BrickPressureAssistState {
   return {
     timeSinceLastBallPaddleContact: 0,
-    brickPressureAssistLevels: 0,
+    brickSpeedAssistProgress: 0,
     trappedBallSpeedBoost: 0,
   };
 }
@@ -25,16 +25,16 @@ export function advanceBrickPressureAssist(
   state: BrickPressureAssistState,
   activeWorldDeltaSeconds: number,
 ): void {
-  const config = GAME_CONFIG.difficulty;
+  const config = GAME_CONFIG.brickSpeed;
   const deltaSeconds = Math.max(0, activeWorldDeltaSeconds);
-  const target = getPressureAssistTargetLevel(state.timeSinceLastBallPaddleContact, {
-    graceSeconds: config.brickPressureAssistGraceSeconds,
-    maximumLevels: config.brickPressureAssistMaximumLevels,
-    levelsPerSecond: config.brickPressureAssistLevelsPerSecond,
+  const target = getPressureAssistTargetProgress(state.timeSinceLastBallPaddleContact, {
+    graceSeconds: config.pressureAssistGraceSeconds,
+    maximumProgress: config.pressureAssistMaximumProgress,
+    progressPerSecond: config.pressureAssistProgressPerSecond,
   });
-  const maximumChange = config.brickPressureAssistLevelsPerSecond * deltaSeconds;
-  state.brickPressureAssistLevels = moveToward(
-    state.brickPressureAssistLevels,
+  const maximumChange = config.pressureAssistProgressPerSecond * deltaSeconds;
+  state.brickSpeedAssistProgress = moveToward(
+    state.brickSpeedAssistProgress,
     target,
     maximumChange,
   );
@@ -51,12 +51,9 @@ export function recordBallPaddleContact(state: BrickPressureAssistState): void {
   state.timeSinceLastBallPaddleContact = 0;
 }
 
-export function getEffectiveBrickSpeedLevel(
-  baseDifficultyLevel: number,
+export function getEffectiveBrickSpeedProgress(
+  baseSpeedProgress: number,
   state: BrickPressureAssistState,
 ): number {
-  return Math.max(
-    GAME_CONFIG.progression.startingLevel,
-    baseDifficultyLevel - state.brickPressureAssistLevels,
-  );
+  return Math.max(0, baseSpeedProgress - state.brickSpeedAssistProgress);
 }

@@ -1,6 +1,7 @@
 import type { BrickState } from './brickField';
 import { GAME_CONFIG } from './config';
 import type { GameState } from './gameState';
+import { getCanonicalBrickSpeedTimingRuleParameters, getSpeedRampEndSecondsForRules } from './gameplayRules';
 
 export function isBossBrick(brick: Pick<BrickState, 'kind'>): boolean {
   return brick.kind === 'BOSS';
@@ -19,13 +20,19 @@ export function updateBossDirector(state: GameState): void {
     director.armedOpportunities += 1;
     director.nextCheckpointIndex += 1;
   }
+  const finalBossTime = getSpeedRampEndSecondsForRules(getCanonicalBrickSpeedTimingRuleParameters());
+  if (!director.finalBossTriggered && state.survivalTimeSeconds >= finalBossTime) {
+    director.finalBossTriggered = true;
+    director.finalBossPending = true;
+  }
+  if (director.finalBossPending && !director.bossQueued && !director.activeBossId) {
+    queueBoss(state);
+    director.finalBossPending = false;
+  }
 }
 
-/** One deterministic lottery roll for one destroyed ordinary brick. */
-export function recordOrdinaryBrickDestruction(state: GameState): void {
+function queueBoss(state: GameState): void {
   const director = state.bossDirector;
-  if (director.armedOpportunities <= 0 || director.bossQueued || director.activeBossId) return;
-  if (nextBossRandom(state) >= GAME_CONFIG.boss.killLotteryChance) return;
   const minimum = GAME_CONFIG.boss.edgeExcludedColumns;
   const maximum = GAME_CONFIG.bricks.columns
     - GAME_CONFIG.boss.edgeExcludedColumns - GAME_CONFIG.boss.widthColumns;
@@ -33,6 +40,14 @@ export function recordOrdinaryBrickDestruction(state: GameState): void {
   director.bossQueued = true;
   director.bossPreGapGenerated = false;
   director.bossPreGapRowId = undefined;
+}
+
+/** One deterministic lottery roll for one destroyed ordinary brick. */
+export function recordOrdinaryBrickDestruction(state: GameState): void {
+  const director = state.bossDirector;
+  if (director.armedOpportunities <= 0 || director.bossQueued || director.activeBossId) return;
+  if (nextBossRandom(state) >= GAME_CONFIG.boss.killLotteryChance) return;
+  queueBoss(state);
   director.armedOpportunities -= 1;
 }
 

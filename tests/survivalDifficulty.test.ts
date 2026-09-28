@@ -7,12 +7,17 @@ import { createInitialGameState } from '../src/simulation/gameState';
 import { SimulationStepOutcome, stepSimulation } from '../src/simulation/simulation';
 import { createSessionState, enterWin, GamePhase, isSimulationRunning } from '../src/simulation/sessionState';
 import {
-  getBrickDensityDifficultyLevel,
   getSurvivalPhase,
-  getVirtualDifficultyLevel,
+  getBrickSpeedProgress,
   SurvivalPhase,
 } from '../src/simulation/survivalDifficulty';
 import { getMenuTitle } from '../src/phaser/ui/pauseMenuState';
+import {
+  getBrickSpeedProgressForRules,
+  getCanonicalBrickSpeedTimingRuleParameters,
+  getSpeedRampEndSecondsForRules,
+  resolveBrickDescentSpeedForRules,
+} from '../src/simulation/gameplayRules';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -22,47 +27,96 @@ function assertNear(actual: number, expected: number, message: string, tolerance
   assert(Math.abs(actual - expected) <= tolerance, `${message}: expected ${expected}, received ${actual}`);
 }
 
-function testDifficultyPhasesAndCurve(): void {
+function testSurvivalPhasesAndSpeedCurve(): void {
   const config = GAME_CONFIG.survival;
   assert(getSurvivalPhase(0) === SurvivalPhase.EasyStart, '0:00 phase mismatch');
   assert(getSurvivalPhase(29.9) === SurvivalPhase.EasyStart, '0:29.9 phase mismatch');
   assert(getSurvivalPhase(30) === SurvivalPhase.Ramp, '0:30 phase mismatch');
-  assert(getSurvivalPhase(719.999) === SurvivalPhase.Ramp, 'pre-enrage phase mismatch');
-  assert(getSurvivalPhase(720) === SurvivalPhase.Enrage, '12:00 phase mismatch');
-  assert(getSurvivalPhase(1019.9) === SurvivalPhase.Enrage, '16:59.9 phase mismatch');
-  assert(getSurvivalPhase(1020) === SurvivalPhase.Win, '17:00 phase mismatch');
-  assertNear(getVirtualDifficultyLevel(0), 1, 'easy-start difficulty');
-  assertNear(getVirtualDifficultyLevel(30), 1, 'ramp-start difficulty');
-  assertNear(getVirtualDifficultyLevel((30 + 720) / 2), 8.5, 'mid-ramp difficulty');
-  assertNear(getVirtualDifficultyLevel(720), 16, 'ramp-end difficulty');
-  assertNear(getVirtualDifficultyLevel(1000), 16, 'enrage speed ceiling');
-  assert(config.enrageDensityMin === 20 && config.enrageDensityMax === 20, 'enrage density config mismatch');
+  assert(getSurvivalPhase(899.999) === SurvivalPhase.Ramp, 'pre-win phase mismatch');
+  assert(getSurvivalPhase(900) === SurvivalPhase.Win, '15:00 phase mismatch');
+  assertNear(getBrickSpeedProgress(0), 0, 'easy-start progress at 0:00');
+  assertNear(getBrickSpeedProgress(15), 0, 'easy-start progress at 0:15');
+  assertNear(getBrickSpeedProgress(30), 0, 'speed-ramp progress at 0:30');
+  assertNear(getBrickSpeedProgress((30 + 840) / 2), 0.5, 'mid-ramp progress');
+  assert(getBrickSpeedProgress(839) < 1, 'speed reached maximum before 14:00');
+  assertNear(getBrickSpeedProgress(840), 1, '14:00 speed progress');
+  assertNear(getBrickSpeedProgress(899.999), 1, 'final-minute speed plateau');
+  const rules = getCanonicalBrickSpeedTimingRuleParameters();
+  assert(getSpeedRampEndSecondsForRules(rules) === config.winTimeSeconds - GAME_CONFIG.brickSpeed.maxSpeedLeadSeconds,
+    'speed ramp end was not derived from win time');
 }
 
-function testOldLevel16EquivalenceAndEnrageDensity(): void {
-  const expected: Record<BrickSpeedClass, number> = {
-    SLOW: 16.5,
-    MEDIUM: 20,
-    FAST: 23.5,
-    RUSH: 27,
+function testCanonicalSpeedsAndLevelBasedDensity(): void {
+  const start: Record<BrickSpeedClass, number> = {
+    SLOW: 2,
+    MEDIUM: 3,
+    FAST: 4,
+    RUSH: 5,
   };
+  const maximum: Record<BrickSpeedClass, number> = {
+    SLOW: 12,
+    MEDIUM: 14,
+    FAST: 17,
+    RUSH: 21,
+  };
+  for (const timestamp of [0, 15, 30]) {
+    for (const speedClass of Object.keys(start) as BrickSpeedClass[]) {
+      assertNear(resolveBrickDescentSpeed(speedClass, getBrickSpeedProgress(timestamp)), start[speedClass],
+        `${speedClass} starting speed at ${timestamp}s`);
+    }
+  }
+  const halfwayTime = (GAME_CONFIG.brickSpeed.easyStartSeconds
+    + getSpeedRampEndSecondsForRules(getCanonicalBrickSpeedTimingRuleParameters())) / 2;
+  for (const speedClass of Object.keys(start) as BrickSpeedClass[]) {
+    assertNear(resolveBrickDescentSpeed(speedClass, getBrickSpeedProgress(halfwayTime)),
+      (start[speedClass] + maximum[speedClass]) / 2, `${speedClass} halfway speed`);
+  }
   let weightedTotal = 0;
+  let weightedStartTotal = 0;
   let totalWeight = 0;
   for (const entry of GAME_CONFIG.bricks.speedClassDistribution) {
-    const oldLevel16Speed = resolveBrickDescentSpeed(entry.speedClass, 16);
-    const timedSpeed = resolveBrickDescentSpeed(entry.speedClass, getVirtualDifficultyLevel(720));
-    assertNear(oldLevel16Speed, expected[entry.speedClass], `old Level16 ${entry.speedClass}`);
-    assertNear(timedSpeed, oldLevel16Speed, `timed Level16 ${entry.speedClass}`);
+    const timedSpeed = resolveBrickDescentSpeed(entry.speedClass, getBrickSpeedProgress(840));
+    assertNear(timedSpeed, maximum[entry.speedClass], `capped ${entry.speedClass}`);
     weightedTotal += timedSpeed * entry.weight;
+    weightedStartTotal += start[entry.speedClass] * entry.weight;
     totalWeight += entry.weight;
   }
-  assertNear(weightedTotal / totalWeight, 18.6, 'old Level16 weighted average');
-  const oldLevel16Density = getBrickOccupancyRange(16);
-  assert(oldLevel16Density.minimum === 12 && oldLevel16Density.maximum === 14, 'old Level16 density mismatch');
-  const preEnrageDensity = getBrickOccupancyRange(getBrickDensityDifficultyLevel(719.999));
-  assert(preEnrageDensity.minimum === 12 && preEnrageDensity.maximum === 14, 'pre-enrage density mismatch');
-  const enrageDensity = getBrickOccupancyRange(getBrickDensityDifficultyLevel(720));
-  assert(enrageDensity.minimum === 20 && enrageDensity.maximum === 20, 'enrage density was not full');
+  assertNear(weightedStartTotal / totalWeight, 2.6, 'starting weighted average');
+  assertNear(weightedTotal / totalWeight, 13.45, 'maximum weighted average');
+  for (const timestamp of [840, 870, 899]) {
+    for (const speedClass of Object.keys(maximum) as BrickSpeedClass[]) {
+      assertNear(resolveBrickDescentSpeed(speedClass, getBrickSpeedProgress(timestamp)), maximum[speedClass],
+        `${speedClass} final plateau at ${timestamp}s`);
+    }
+  }
+  const startDensity = getBrickOccupancyRange(GAME_CONFIG.bricks.densityStartLevel);
+  assert(startDensity.minimum === 4 && startDensity.maximum === 7, 'starting density mismatch');
+  const midpointLevel = (GAME_CONFIG.bricks.densityStartLevel + GAME_CONFIG.bricks.densityFullLevel) / 2;
+  const midpointDensity = getBrickOccupancyRange(midpointLevel);
+  assert(midpointDensity.minimum === 12 && midpointDensity.maximum === 14, 'midpoint density mismatch');
+  const fullDensity = getBrickOccupancyRange(GAME_CONFIG.bricks.densityFullLevel);
+  const level25Density = getBrickOccupancyRange(25);
+  const aboveFullDensity = getBrickOccupancyRange(GAME_CONFIG.bricks.densityFullLevel + 10);
+  assert(level25Density.minimum === 19 && level25Density.maximum === 19, 'Level 25 density was not near-full');
+  assert(fullDensity.minimum === 20 && fullDensity.maximum === 20, 'full-level density mismatch');
+  assert(aboveFullDensity.minimum === 20 && aboveFullDensity.maximum === 20, 'above-full density mismatch');
+}
+
+function testConfigDerivedTwentyMinuteRamp(): void {
+  const timing = { easyEndSeconds: 30, winSeconds: 20 * 60, maxSpeedLeadSeconds: 60 };
+  assertNear(getSpeedRampEndSecondsForRules(timing), 19 * 60, '20-minute max-speed timestamp');
+  const rules = {
+    startSpeeds: { SLOW: 2, MEDIUM: 3, FAST: 4, RUSH: 5 },
+    maxSpeeds: { SLOW: 12, MEDIUM: 14, FAST: 17, RUSH: 21 },
+    classWeights: { SLOW: 60, MEDIUM: 25, FAST: 10, RUSH: 5 },
+  };
+  const midpoint = (timing.easyEndSeconds + getSpeedRampEndSecondsForRules(timing)) / 2;
+  assertNear(getBrickSpeedProgressForRules(midpoint, timing), 0.5, '20-minute midpoint progress');
+  for (const speedClass of Object.keys(rules.startSpeeds) as BrickSpeedClass[]) {
+    assertNear(resolveBrickDescentSpeedForRules(speedClass, 0.5, rules),
+      (rules.startSpeeds[speedClass] + rules.maxSpeeds[speedClass]) / 2,
+      `20-minute ${speedClass} midpoint speed`);
+  }
 }
 
 function testPlayerLevelDecouplingAndWorldTimer(): void {
@@ -115,15 +169,16 @@ function testLifeLostPaddlePreservation(): void {
 function testGraceAndWinOutcome(): void {
   const assist = createBrickPressureAssistState();
   advanceBrickPressureAssist(assist, 6.9);
-  assertNear(assist.brickPressureAssistLevels, 0, 'assist began before seven seconds');
+  assertNear(assist.brickSpeedAssistProgress, 0, 'assist began before seven seconds');
   assertNear(assist.trappedBallSpeedBoost, 0, 'ball boost began before seven seconds');
   advanceBrickPressureAssist(assist, 0.1);
-  assertNear(assist.brickPressureAssistLevels, 0, 'assist advanced at the grace boundary');
+  assertNear(assist.brickSpeedAssistProgress, 0, 'assist advanced at the grace boundary');
   advanceBrickPressureAssist(assist, 1);
-  assertNear(assist.brickPressureAssistLevels, 1, 'assist did not ramp after grace');
+  assertNear(assist.brickSpeedAssistProgress, 1 / 15, 'assist did not ramp after grace');
   assertNear(assist.trappedBallSpeedBoost, 0.05, 'ball boost did not ramp after grace');
 
   const state = createInitialGameState();
+  state.bossDirector.activeBossId = 'boss:still-alive';
   state.survivalTimeSeconds = GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.fixedStepSeconds / 2;
   const outcome = stepSimulation(
     state,
@@ -131,7 +186,7 @@ function testGraceAndWinOutcome(): void {
     GAME_CONFIG.fixedStepSeconds,
     GAME_CONFIG.fixedStepSeconds,
   );
-  assert(outcome === SimulationStepOutcome.Win, '17:00 did not produce immediate win outcome');
+  assert(outcome === SimulationStepOutcome.Win, '15:00 did not produce immediate win outcome');
   assertNear(state.survivalTimeSeconds, GAME_CONFIG.survival.winTimeSeconds, 'win timer was not clamped');
   const session = createSessionState();
   enterWin(session);
@@ -152,8 +207,9 @@ function testGraceAndWinOutcome(): void {
   }
 }
 
-testDifficultyPhasesAndCurve();
-testOldLevel16EquivalenceAndEnrageDensity();
+testSurvivalPhasesAndSpeedCurve();
+testCanonicalSpeedsAndLevelBasedDensity();
+testConfigDerivedTwentyMinuteRamp();
 testPlayerLevelDecouplingAndWorldTimer();
 testLifeLostPaddlePreservation();
 testGraceAndWinOutcome();

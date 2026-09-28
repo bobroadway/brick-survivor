@@ -12,9 +12,10 @@ import {
   getMissileSpec,
   getPaddleSizeSpec,
   getPierceSpec,
-  getPressureAssistLevelAfterInactivity,
+  getBrickSpeedProgressForRules,
+  getPressureAssistProgressAfterInactivity,
+  getSpeedRampEndSecondsForRules,
   getSplitSpec,
-  getVirtualDifficultyLevelForRules,
   getWindFootprint,
   resolveBrickDescentSpeedForRules,
   type BrickSpeedClass,
@@ -57,22 +58,22 @@ export interface BalanceModelAssumptions {
 
 export interface BalanceSettings {
   timeSeconds: number;
-  difficulty: { easyEndSeconds: number; enrageStartSeconds: number; winSeconds: number; rampStartLevel: number; rampEndLevel: number };
+  playerLevel: number;
+  speedTiming: { easyEndSeconds: number; winSeconds: number; maxSpeedLeadSeconds: number };
   board: {
     columns: number; logicalWidth: number; logicalHeight: number; brickWidth: number; brickHeight: number;
     horizontalPitch: number; verticalPitch: number; roofY: number; dangerY: number; lossY: number;
   };
   density: DensityRuleParameters & { override: number | null };
   speed: {
-    weights: Record<SpeedClass, number>; positions: Record<SpeedClass, number>;
-    startingLevel: number;
-    baseAverage: number; averageGrowthPerLevel: number; baseRange: number; rangeGrowthPerLevel: number;
-    averageOverride: number | null;
+    weights: Record<SpeedClass, number>;
+    start: Record<SpeedClass, number>;
+    max: Record<SpeedClass, number>;
   };
   armored: { enabled: boolean; chance: number; hp: number; xp: number };
-  boss: { enabled: boolean; hp: number; checkpoints: number[]; lotteryChance: number; speedMultiplier: number };
+  boss: { enabled: boolean; hp: number; checkpoints: number[]; lotteryChance: number; speedMultiplier: number; entranceSpeed: number };
   ball: { speed: number };
-  pressureAssist: { enabled: boolean; graceSeconds: number; maximumLevels: number; levelsPerSecond: number };
+  pressureAssist: { enabled: boolean; graceSeconds: number; maximumProgress: number; progressPerSecond: number };
   assumptions: BalanceModelAssumptions;
   powers: Record<PowerId, number>;
   splitAcquiredAtSeconds: number;
@@ -99,7 +100,11 @@ export interface BalanceReport {
   formation: FormationReport;
   averageHpPerBrick: number;
   boardHpPerSecond: MetricSet;
-  boss: { applicable: boolean; checkpoint?: number; expectedLotteryKills: number; discreteHp: number; amortizedHpPerSecond: number; cruiseSpeed: number; rushArrivalSpeed: number };
+  boss: {
+    applicable: boolean; checkpoint?: number; guaranteedFinalBossTime: number; guaranteedFinalBossDue: boolean;
+    expectedLotteryKills: number; discreteHp: number; amortizedHpPerSecond: number;
+    cruiseSpeed: number; rushArrivalSpeed: number;
+  };
   activeBallCount: number;
   ballContactsPerSecond: MetricSet;
   elementalProcEventsPerSecond: MetricSet;
@@ -116,12 +121,11 @@ export function createGameDefaultBalanceSettings(): BalanceSettings {
   const horizontalPitch = GAME_CONFIG.bricks.brickWidth + GAME_CONFIG.bricks.horizontalGap;
   return {
     timeSeconds: 6 * 60,
-    difficulty: {
-      easyEndSeconds: GAME_CONFIG.survival.easyStartDurationSeconds,
-      enrageStartSeconds: GAME_CONFIG.survival.rampEndSeconds,
+    playerLevel: GAME_CONFIG.progression.startingLevel,
+    speedTiming: {
+      easyEndSeconds: GAME_CONFIG.brickSpeed.easyStartSeconds,
       winSeconds: GAME_CONFIG.survival.winTimeSeconds,
-      rampStartLevel: GAME_CONFIG.survival.rampStartDifficultyLevel,
-      rampEndLevel: GAME_CONFIG.survival.rampEndDifficultyLevel,
+      maxSpeedLeadSeconds: GAME_CONFIG.brickSpeed.maxSpeedLeadSeconds,
     },
     board: {
       columns: GAME_CONFIG.bricks.columns, logicalWidth: GAME_CONFIG.width, logicalHeight: GAME_CONFIG.height,
@@ -140,25 +144,21 @@ export function createGameDefaultBalanceSettings(): BalanceSettings {
     },
     speed: {
       weights: Object.fromEntries(GAME_CONFIG.bricks.speedClassDistribution.map(({ speedClass, weight }) => [speedClass, weight])) as Record<SpeedClass, number>,
-      positions: { ...GAME_CONFIG.difficulty.speedClassRangePositions },
-      startingLevel: GAME_CONFIG.progression.startingLevel,
-      baseAverage: GAME_CONFIG.difficulty.baseAverageBrickSpeed,
-      averageGrowthPerLevel: GAME_CONFIG.difficulty.averageSpeedGrowthPerLevel,
-      baseRange: GAME_CONFIG.difficulty.baseSpeedRange,
-      rangeGrowthPerLevel: GAME_CONFIG.difficulty.speedRangeGrowthPerLevel,
-      averageOverride: null,
+      start: { ...GAME_CONFIG.brickSpeed.start },
+      max: { ...GAME_CONFIG.brickSpeed.max },
     },
     armored: { enabled: true, chance: GAME_CONFIG.bricks.armoredEligibleChance, hp: GAME_CONFIG.bricks.armoredHp, xp: GAME_CONFIG.bricks.armoredXp },
     boss: {
       enabled: true, hp: GAME_CONFIG.boss.hp, checkpoints: [...GAME_CONFIG.boss.checkpointSeconds],
       lotteryChance: GAME_CONFIG.boss.killLotteryChance, speedMultiplier: GAME_CONFIG.boss.slowSpeedMultiplier,
+      entranceSpeed: GAME_CONFIG.brickSpeed.bossEntranceSpeed,
     },
     ball: { speed: GAME_CONFIG.ball.speed },
     pressureAssist: {
       enabled: true,
-      graceSeconds: GAME_CONFIG.difficulty.brickPressureAssistGraceSeconds,
-      maximumLevels: GAME_CONFIG.difficulty.brickPressureAssistMaximumLevels,
-      levelsPerSecond: GAME_CONFIG.difficulty.brickPressureAssistLevelsPerSecond,
+      graceSeconds: GAME_CONFIG.brickSpeed.pressureAssistGraceSeconds,
+      maximumProgress: GAME_CONFIG.brickSpeed.pressureAssistMaximumProgress,
+      progressPerSecond: GAME_CONFIG.brickSpeed.pressureAssistProgressPerSecond,
     },
     assumptions: {
       averageTravelDistanceFactor: 0.72,
@@ -184,9 +184,9 @@ export function createGameDefaultBalanceSettings(): BalanceSettings {
       layoutFactorRange: 0.7,
       electricAvailableCells: 60,
       trappedBallAssistActive: false,
-      trappedBallInactivitySeconds: GAME_CONFIG.difficulty.brickPressureAssistGraceSeconds,
+      trappedBallInactivitySeconds: GAME_CONFIG.brickSpeed.pressureAssistGraceSeconds,
       splitAssumesNoBallLosses: true,
-      reportingTimelineSeconds: [60, 120, 240, 360, 480, 600, 720, 840, 960],
+      reportingTimelineSeconds: [60, 120, 240, 360, 480, 600, 720, 840, GAME_CONFIG.survival.winTimeSeconds],
       monteCarloSeed: 0x0ba1aace,
       monteCarloSamples: 5000,
     },
@@ -204,14 +204,18 @@ export function clampBalanceSettings(input: BalanceSettings): BalanceSettings {
   const settings = cloneBalanceSettings(input);
   const finite = (value: number, fallback: number, minimum = 0) => Number.isFinite(value) ? Math.max(minimum, value) : fallback;
   settings.timeSeconds = finite(settings.timeSeconds, 0);
+  settings.playerLevel = Math.max(1, Math.round(finite(settings.playerLevel, GAME_CONFIG.progression.startingLevel, 1)));
   settings.board.columns = Math.max(1, Math.round(finite(settings.board.columns, 20, 1)));
   settings.density.startMin = Math.min(settings.board.columns, finite(settings.density.startMin, 0));
   settings.density.startMax = Math.min(settings.board.columns, finite(settings.density.startMax, settings.density.startMin));
   settings.density.fullMin = Math.min(settings.board.columns, finite(settings.density.fullMin, settings.board.columns));
   settings.density.fullMax = Math.min(settings.board.columns, finite(settings.density.fullMax, settings.board.columns));
   if (settings.density.override !== null) settings.density.override = Math.min(settings.board.columns, finite(settings.density.override, 0));
-  if (settings.speed.averageOverride !== null) settings.speed.averageOverride = finite(settings.speed.averageOverride, settings.speed.baseAverage);
-  for (const speedClass of SPEED_CLASSES) settings.speed.weights[speedClass] = finite(settings.speed.weights[speedClass], 0);
+  for (const speedClass of SPEED_CLASSES) {
+    settings.speed.weights[speedClass] = finite(settings.speed.weights[speedClass], 0);
+    settings.speed.start[speedClass] = finite(settings.speed.start[speedClass], GAME_CONFIG.brickSpeed.start[speedClass]);
+    settings.speed.max[speedClass] = finite(settings.speed.max[speedClass], GAME_CONFIG.brickSpeed.max[speedClass]);
+  }
   settings.armored.chance = Math.min(1, finite(settings.armored.chance, 0));
   settings.boss.lotteryChance = Math.min(1, finite(settings.boss.lotteryChance, 0));
   settings.assumptions.monteCarloSamples = Math.max(100, Math.min(50000,
@@ -227,48 +231,35 @@ export function getNormalizedWeights(settings: BalanceSettings): Record<SpeedCla
   return Object.fromEntries(SPEED_CLASSES.map((key) => [key, Math.max(0, settings.speed.weights[key]) / total])) as Record<SpeedClass, number>;
 }
 
-export function getVirtualDifficultyLevel(settings: BalanceSettings, time = settings.timeSeconds): number {
-  return getVirtualDifficultyLevelForRules(time, {
-    easyEndSeconds: settings.difficulty.easyEndSeconds,
-    rampEndSeconds: settings.difficulty.enrageStartSeconds,
-    winSeconds: settings.difficulty.winSeconds,
-    rampStartLevel: settings.difficulty.rampStartLevel,
-    rampEndLevel: settings.difficulty.rampEndLevel,
+export function getModeledBrickSpeedProgress(settings: BalanceSettings, time = settings.timeSeconds): number {
+  const base = getBrickSpeedProgressForRules(time, {
+    easyEndSeconds: settings.speedTiming.easyEndSeconds,
+    winSeconds: settings.speedTiming.winSeconds,
+    maxSpeedLeadSeconds: settings.speedTiming.maxSpeedLeadSeconds,
   });
-}
-
-export function getModeledBrickSpeedLevel(settings: BalanceSettings, time = settings.timeSeconds): number {
-  const base = getVirtualDifficultyLevel(settings, time);
   if (!settings.pressureAssist.enabled || !settings.assumptions.trappedBallAssistActive) return base;
-  const assist = getPressureAssistLevelAfterInactivity(
+  const assist = getPressureAssistProgressAfterInactivity(
     settings.assumptions.trappedBallInactivitySeconds,
     settings.pressureAssist,
   );
-  return Math.max(settings.speed.startingLevel, base - assist);
+  return Math.max(0, base - assist);
 }
 
-export function getDerivedDensity(settings: BalanceSettings, time = settings.timeSeconds): number {
+export function getDerivedDensity(settings: BalanceSettings): number {
   if (settings.density.override !== null) return Math.max(0, Math.min(settings.board.columns, settings.density.override));
-  const densityLevel = time >= settings.difficulty.enrageStartSeconds
-    ? settings.density.fullLevel
-    : getVirtualDifficultyLevel(settings, time);
-  const range = getBrickOccupancyRangeForRules(densityLevel, settings.density);
+  const range = getBrickOccupancyRangeForRules(settings.playerLevel, settings.density);
   return (range.minimum + range.maximum) / 2;
 }
 
 export function getClassSpeeds(settings: BalanceSettings, time = settings.timeSeconds): Record<SpeedClass, number> {
-  const level = getModeledBrickSpeedLevel(settings, time);
+  const progress = getModeledBrickSpeedProgress(settings, time);
   const rules = {
-    startingLevel: settings.speed.startingLevel,
-    baseAverage: settings.speed.averageOverride ?? settings.speed.baseAverage,
-    averageGrowthPerLevel: settings.speed.averageOverride === null ? settings.speed.averageGrowthPerLevel : 0,
-    baseRange: settings.speed.baseRange,
-    rangeGrowthPerLevel: settings.speed.rangeGrowthPerLevel,
-    classPositions: settings.speed.positions,
+    startSpeeds: settings.speed.start,
+    maxSpeeds: settings.speed.max,
     classWeights: settings.speed.weights,
   };
   return Object.fromEntries(SPEED_CLASSES.map((key) => [key,
-    Math.max(0, resolveBrickDescentSpeedForRules(key, level, rules))])) as Record<SpeedClass, number>;
+    Math.max(0, resolveBrickDescentSpeedForRules(key, progress, rules))])) as Record<SpeedClass, number>;
 }
 
 export function getWeightedAverageSpeed(speeds: Record<SpeedClass, number>, weights: Record<SpeedClass, number>): number {
@@ -329,9 +320,9 @@ export function estimateFormation(settings: BalanceSettings, density: number, sp
 
 export function getGunMaxDps(level: number): number {
   const spec = getGunSpec(level);
-  if (spec.volleys <= 0) return 0;
-  return spec.volleys * spec.projectilesPerVolley * spec.projectileDamage
-    / (spec.reloadSeconds + (spec.volleys - 1) * spec.shotIntervalSeconds);
+  if (spec.shots <= 0) return 0;
+  return spec.shots * spec.projectileDamage
+    / (spec.reloadSeconds + (spec.shots - 1) * spec.shotIntervalSeconds);
 }
 
 export function getMissileMaxDps(level: number): number {
@@ -554,24 +545,24 @@ export function calculateBalance(
     return report;
   }) : [];
   const applicableCheckpoint = [...settings.boss.checkpoints].reverse().find((checkpoint) => settings.timeSeconds >= checkpoint);
+  const survivalRules = {
+    easyEndSeconds: settings.speedTiming.easyEndSeconds,
+    winSeconds: settings.speedTiming.winSeconds,
+    maxSpeedLeadSeconds: settings.speedTiming.maxSpeedLeadSeconds,
+  };
+  const guaranteedFinalBossTime = getSpeedRampEndSecondsForRules(survivalRules);
   const expectedLotteryKills = settings.boss.lotteryChance > 0 ? 1 / settings.boss.lotteryChance : Number.POSITIVE_INFINITY;
   const bossDiscreteHp = settings.boss.enabled && applicableCheckpoint !== undefined ? settings.boss.hp : 0;
   const bossCruiseSpeed = classSpeeds.SLOW * settings.boss.speedMultiplier;
-  const rushArrivalSpeed = resolveBrickDescentSpeedForRules('RUSH', settings.difficulty.rampEndLevel, {
-    startingLevel: settings.speed.startingLevel,
-    baseAverage: settings.speed.baseAverage,
-    averageGrowthPerLevel: settings.speed.averageGrowthPerLevel,
-    baseRange: settings.speed.baseRange,
-    rangeGrowthPerLevel: settings.speed.rangeGrowthPerLevel,
-    classPositions: settings.speed.positions,
-    classWeights: settings.speed.weights,
-  });
+  const rushArrivalSpeed = settings.boss.entranceSpeed;
   const combinedPower = subtract(build.total, baseline.base);
   return {
     density, classSpeeds, normalizedWeights, weightedAverageSpeed, formation, averageHpPerBrick, boardHpPerSecond,
     boss: {
       applicable: applicableCheckpoint !== undefined && settings.boss.enabled,
-      checkpoint: applicableCheckpoint, expectedLotteryKills, discreteHp: bossDiscreteHp,
+      checkpoint: applicableCheckpoint, guaranteedFinalBossTime,
+      guaranteedFinalBossDue: settings.boss.enabled && settings.timeSeconds >= guaranteedFinalBossTime,
+      expectedLotteryKills, discreteHp: bossDiscreteHp,
       amortizedHpPerSecond: bossDiscreteHp / Math.max(1, expectedLotteryKills / Math.max(0.01, build.total.likely)),
       cruiseSpeed: bossCruiseSpeed,
       rushArrivalSpeed,

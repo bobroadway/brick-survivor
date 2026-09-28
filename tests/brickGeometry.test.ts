@@ -16,7 +16,6 @@ import {
   type BrickState,
 } from '../src/simulation/brickField';
 import {
-  getTargetAverageBrickSpeed,
   resolveBrickDescentSpeed,
   type BrickSpeedClass,
 } from '../src/simulation/difficulty';
@@ -45,25 +44,11 @@ export function verifyBrickVerticalGeometry(): void {
   assertNear(spawnGap, caughtGap, 'spawned and caught-up edge gaps');
 
   const expectedSpeeds: Record<BrickSpeedClass, number> = {
-    SLOW: 3, MEDIUM: 4, FAST: 5, RUSH: 6,
+    SLOW: 2, MEDIUM: 3, FAST: 4, RUSH: 5,
   };
-  verifyOldSlowBrickRegression();
   for (const speedClass of Object.keys(expectedSpeeds) as BrickSpeedClass[]) {
-    assertNear(resolveBrickDescentSpeed(speedClass, 1), expectedSpeeds[speedClass], `${speedClass} speed`);
+    assertNear(resolveBrickDescentSpeed(speedClass, 0), expectedSpeeds[speedClass], `${speedClass} starting speed`);
     verifySpatialEntryGate(speedClass, expectedSpeeds[speedClass]);
-  }
-}
-
-function verifyOldSlowBrickRegression(): void {
-  const field = createSingleBrickField('SLOW');
-  const originalNextRowId = field.nextRowId;
-  const oldAverageBasedInterval = getBrickRowPitch() / getTargetAverageBrickSpeed(1);
-  advanceBrickField(field, oldAverageBasedInterval, 1);
-  assertNear(oldAverageBasedInterval, 6.666666666666667, 'old average-based interval');
-  assertNear(resolveBrickDescentSpeed('SLOW', 1) * oldAverageBasedInterval, 20, 'old SLOW displacement');
-  assertNear(getFormationEntryClearance(field), 0, 'old SLOW edge clearance');
-  if (field.nextRowId !== originalNextRowId) {
-    throw new Error('SLOW formation spawned at the old illegal average-speed interval');
   }
 }
 

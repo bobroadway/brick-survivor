@@ -63,6 +63,8 @@ export interface BossDirectorState {
   bossPreGapRowId?: number;
   queuedStartColumn?: number;
   activeBossId?: string;
+  finalBossTriggered: boolean;
+  finalBossPending: boolean;
 }
 export interface GameState {
   paddle: PaddleState;
@@ -121,6 +123,8 @@ export function createInitialGameState(): GameState {
       lotteryGeneratorState: GAME_CONFIG.boss.lotterySeed >>> 0,
       bossQueued: false,
       bossPreGapGenerated: false,
+      finalBossTriggered: false,
+      finalBossPending: false,
     },
     nextProjectileId: 1,
     electricProcs: [],

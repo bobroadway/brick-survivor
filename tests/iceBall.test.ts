@@ -396,8 +396,8 @@ for (const source of ['ELECTRIC', 'FIRE', 'WIND'] as DamageSource[]) {
   addBrick(state, frozen);
   addBrick(state, moving);
   advanceBrickField(state.brickField, 1, 20, 20);
-  assert(frozen.y === 500, 'frozen brick moved under high difficulty');
-  assert(moving.y > 300, 'non-frozen brick stopped moving under high difficulty');
+  assert(frozen.y === 500, 'frozen brick moved at high speed progress');
+  assert(moving.y > 300, 'non-frozen brick stopped moving at high speed progress');
   assert(isDangerBrick(frozen), 'danger presentation ignored a frozen danger brick');
 }
 {

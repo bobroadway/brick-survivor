@@ -5,10 +5,11 @@ import {
   getGunSpec,
   getIceSpec,
   getMissileSpec,
+  getBrickSpeedProgressForRules,
   getPaddleSizeSpec,
   getPierceSpec,
   getSplitSpec,
-  getVirtualDifficultyLevelForRules,
+  getSpeedRampEndSecondsForRules,
   getWindFootprint,
   resolveBrickDescentSpeedForRules,
   type PowerRuleParameters,
@@ -16,7 +17,7 @@ import {
 import { GAME_CONFIG } from '../src/simulation/config';
 import { getBrickOccupancyRange } from '../src/simulation/brickField';
 import { resolveBrickDescentSpeed } from '../src/simulation/difficulty';
-import { getVirtualDifficultyLevel } from '../src/simulation/survivalDifficulty';
+import { getBrickSpeedProgress } from '../src/simulation/survivalDifficulty';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -25,8 +26,8 @@ function assert(condition: unknown, message: string): asserts condition {
 const powerRules: PowerRuleParameters = { ...GAME_CONFIG.powers };
 const changed: PowerRuleParameters = {
   ...powerRules,
-  gunProjectilesPerVolley: 3,
-  gunVolleysByLevel: [2, 4, 6, 8, 10],
+  gunShotsByLevel: [2, 4, 6, 8, 10],
+  gunAlternatingPortsLevel: 4,
   piercingCapacityByLevel: [2, 4, 6, 8, 10],
   splittingCooldownSecondsByLevel: [11, 12, 13, 14, 15],
   splittingBallsAddedPerActivation: 2,
@@ -40,8 +41,10 @@ const changed: PowerRuleParameters = {
   iceCollisionCapacityByLevel: [3, 4, 5, 6, 7],
 };
 
-assert(getGunSpec(3, changed).projectilesPerVolley === 3 && getGunSpec(3, changed).volleys === 6,
+assert(getGunSpec(3, changed).shots === 6 && getGunSpec(3, changed).origins.every((origin) => origin === 'CENTER'),
   'Gun spec did not honor nonstandard canonical inputs');
+assert(getGunSpec(4, changed).origins.join(',') === 'LEFT,RIGHT,LEFT,RIGHT,LEFT,RIGHT,LEFT,RIGHT',
+  'Gun spec did not honor alternating-port threshold');
 assert(getPierceSpec(3, changed).capacity === 6, 'Pierce spec did not honor nonstandard capacity');
 assert(getSplitSpec(2, changed).cooldownSeconds === 12 && getSplitSpec(2, changed).ballsAddedPerActivation === 2,
   'Split spec did not honor nonstandard cadence');
@@ -57,29 +60,22 @@ assert(getPaddleSizeSpec(2, changed).widthMultiplier === 1.6,
 assert(getIceSpec(3, changed).collisionCapacity === 5, 'Ice spec did not honor nonstandard capacity');
 
 const speedRules = {
-  startingLevel: 2,
-  baseAverage: 10,
-  averageGrowthPerLevel: 2,
-  baseRange: 4,
-  rangeGrowthPerLevel: 1,
-  classPositions: { SLOW: 0, MEDIUM: 0.25, FAST: 0.75, RUSH: 1 },
+  startSpeeds: { SLOW: 2, MEDIUM: 4, FAST: 6, RUSH: 8 },
+  maxSpeeds: { SLOW: 10, MEDIUM: 14, FAST: 18, RUSH: 22 },
   classWeights: { SLOW: 1, MEDIUM: 1, FAST: 1, RUSH: 1 },
 };
-assert(resolveBrickDescentSpeedForRules('RUSH', 4, speedRules)
-  > resolveBrickDescentSpeedForRules('SLOW', 4, speedRules), 'Nonstandard shared speed curve failed');
+assert(resolveBrickDescentSpeedForRules('RUSH', 0.5, speedRules) === 15
+  && resolveBrickDescentSpeedForRules('SLOW', 0.5, speedRules) === 6,
+  'Nonstandard shared speed interpolation failed');
 
 const densityRules = { startLevel: 2, fullLevel: 6, startMin: 2, startMax: 4, fullMin: 10, fullMax: 12 };
 const density = getBrickOccupancyRangeForRules(4, densityRules);
 assert(density.minimum === 6 && density.maximum === 8, 'Nonstandard shared density curve failed');
 
-for (const level of [1, 5, 12]) {
-  assert(resolveBrickDescentSpeed('FAST', level) === resolveBrickDescentSpeedForRules('FAST', level, {
-    startingLevel: GAME_CONFIG.progression.startingLevel,
-    baseAverage: GAME_CONFIG.difficulty.baseAverageBrickSpeed,
-    averageGrowthPerLevel: GAME_CONFIG.difficulty.averageSpeedGrowthPerLevel,
-    baseRange: GAME_CONFIG.difficulty.baseSpeedRange,
-    rangeGrowthPerLevel: GAME_CONFIG.difficulty.speedRangeGrowthPerLevel,
-    classPositions: { ...GAME_CONFIG.difficulty.speedClassRangePositions },
+for (const progress of [0, 0.5, 1]) {
+  assert(resolveBrickDescentSpeed('FAST', progress) === resolveBrickDescentSpeedForRules('FAST', progress, {
+    startSpeeds: { ...GAME_CONFIG.brickSpeed.start },
+    maxSpeeds: { ...GAME_CONFIG.brickSpeed.max },
     classWeights: Object.fromEntries(GAME_CONFIG.bricks.speedClassDistribution.map(({ speedClass, weight }) => [speedClass, weight])) as typeof speedRules.classWeights,
   }), 'Gameplay speed wrapper drifted from shared rule');
 }
@@ -91,10 +87,13 @@ assert(JSON.stringify(getBrickOccupancyRange(8)) === JSON.stringify(getBrickOccu
   fullMin: GAME_CONFIG.bricks.densityFullMinOccupancy,
   fullMax: GAME_CONFIG.bricks.densityFullMaxOccupancy,
 })), 'Gameplay density wrapper drifted from shared rule');
-assert(getVirtualDifficultyLevel(400) === getVirtualDifficultyLevelForRules(400, {
-  easyEndSeconds: GAME_CONFIG.survival.easyStartDurationSeconds,
-  rampEndSeconds: GAME_CONFIG.survival.rampEndSeconds,
+const survivalRules = {
+  easyEndSeconds: GAME_CONFIG.brickSpeed.easyStartSeconds,
   winSeconds: GAME_CONFIG.survival.winTimeSeconds,
-  rampStartLevel: GAME_CONFIG.survival.rampStartDifficultyLevel,
-  rampEndLevel: GAME_CONFIG.survival.rampEndDifficultyLevel,
-}), 'Gameplay survival wrapper drifted from shared rule');
+  maxSpeedLeadSeconds: GAME_CONFIG.brickSpeed.maxSpeedLeadSeconds,
+};
+assert(getBrickSpeedProgress(400) === getBrickSpeedProgressForRules(400, survivalRules),
+  'Gameplay speed-progress wrapper drifted from shared rule');
+assert(getSpeedRampEndSecondsForRules(survivalRules) === 840, 'Canonical speed-ramp end was not win minus lead');
+assert(getSpeedRampEndSecondsForRules({ ...survivalRules, winSeconds: 1200 }) === 1140,
+  'Injected win time did not derive its speed-ramp end');
