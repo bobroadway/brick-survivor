@@ -33,6 +33,14 @@ export interface BrickState {
   bossHitJoltRemainingSeconds?: number;
   bossArrivalPhase?: 'RUSH' | 'DECELERATING' | 'CRUISE';
   bossDecelerationElapsedSeconds?: number;
+  isFinalBoss?: boolean;
+  finalBossInitialY?: number;
+  finalBossInitialSpeed?: number;
+  finalBossAcceleration?: number;
+  finalBossElapsedSeconds?: number;
+  finalBossDurationSeconds?: number;
+  bossPaddleContactCooldownSeconds?: number;
+  bossPaddleWasTouching?: boolean;
   /** Ice ownership state; pending bricks keep descending until entry geometry permits stopping. */
   iceState?: 'PENDING_FREEZE' | 'FROZEN';
   /** Ball responsible for a pending freeze, retained for same-contact safety on commit. */
@@ -67,6 +75,7 @@ export interface BrickFieldCallbacks {
   onFrozenBrickContact?: (contact: FrozenBrickContact) => void;
   onPendingFreezeReady?: (brick: BrickState) => void;
   queuedBossStartColumn?: number;
+  reservedFinalBossStartColumn?: number;
   onBossSpawned?: (boss: BrickState) => void;
   bossPreGapGenerated?: boolean;
   bossPreGapRowId?: number;
@@ -216,17 +225,33 @@ export function getActiveBoss(field: BrickFieldState): BrickState | undefined {
   return field.columns.flat().find(({ kind }) => kind === 'BOSS');
 }
 
+export function getActiveBosses(field: BrickFieldState): BrickState[] {
+  return field.columns.flat().filter(({ kind }) => kind === 'BOSS');
+}
+
+export function getActiveNormalBoss(field: BrickFieldState): BrickState | undefined {
+  return field.columns.flat().find(({ kind, isFinalBoss }) => kind === 'BOSS' && !isFinalBoss);
+}
+
 function getBossColumns(startColumn: number): number[] {
   return Array.from({ length: GAME_CONFIG.boss.widthColumns }, (_, offset) => startColumn + offset);
 }
 
-function getReservedBossColumns(field: BrickFieldState, queuedStartColumn?: number): Set<number> {
-  const boss = getActiveBoss(field);
-  if (boss && boss.y < GAME_CONFIG.bricks.fieldTopY
-    + GAME_CONFIG.boss.roofClearanceRows * getBrickRowPitch()) {
-    return new Set(getBossColumns(boss.column));
+function getReservedBossColumns(
+  field: BrickFieldState,
+  queuedStartColumn?: number,
+  finalStartColumn?: number,
+): Set<number> {
+  const reserved = new Set<number>();
+  for (const boss of getActiveBosses(field)) {
+    if (boss.y < GAME_CONFIG.bricks.fieldTopY
+      + GAME_CONFIG.boss.roofClearanceRows * getBrickRowPitch()) {
+      for (const column of getBossColumns(boss.column)) reserved.add(column);
+    }
   }
-  return queuedStartColumn === undefined ? new Set() : new Set(getBossColumns(queuedStartColumn));
+  if (queuedStartColumn !== undefined) for (const column of getBossColumns(queuedStartColumn)) reserved.add(column);
+  if (finalStartColumn !== undefined) for (const column of getBossColumns(finalStartColumn)) reserved.add(column);
+  return reserved;
 }
 
 function canSpawnBoss(field: BrickFieldState, startColumn: number, spawnBottom: number): boolean {
@@ -259,6 +284,33 @@ function spawnBoss(field: BrickFieldState, startColumn: number, y: number): Bric
   return boss;
 }
 
+export function spawnFinalBoss(
+  field: BrickFieldState,
+  startColumn: number,
+  durationSeconds: number,
+  speedProgress: number,
+): BrickState {
+  const height = GAME_CONFIG.bricks.brickHeight * GAME_CONFIG.boss.heightRows
+    + GAME_CONFIG.bricks.verticalEdgeGap * (GAME_CONFIG.boss.heightRows - 1);
+  const initialY = GAME_CONFIG.bricks.fieldTopY - height;
+  const distance = getBrickFailureBoundaryY() - (initialY + height);
+  const requestedInitialSpeed = resolveBrickDescentSpeed('SLOW', speedProgress)
+    * GAME_CONFIG.boss.slowSpeedMultiplier;
+  const initialSpeed = requestedInitialSpeed * durationSeconds < distance
+    ? requestedInitialSpeed : distance / durationSeconds;
+  const acceleration = Math.max(0,
+    2 * (distance - initialSpeed * durationSeconds) / (durationSeconds * durationSeconds));
+  const boss = spawnBoss(field, startColumn, initialY);
+  boss.isFinalBoss = true;
+  boss.bossArrivalPhase = undefined;
+  boss.finalBossInitialY = initialY;
+  boss.finalBossInitialSpeed = initialSpeed;
+  boss.finalBossAcceleration = acceleration;
+  boss.finalBossElapsedSeconds = 0;
+  boss.finalBossDurationSeconds = durationSeconds;
+  return boss;
+}
+
 export function getMaximumConfiguredRushSpeed(): number {
   return GAME_CONFIG.brickSpeed.bossEntranceSpeed;
 }
@@ -266,6 +318,8 @@ export function getMaximumConfiguredRushSpeed(): number {
 export function getBossDescentSpeed(brick: BrickState, speedProgress: number): number {
   const cruiseSpeed = resolveBrickDescentSpeed('SLOW', speedProgress) * GAME_CONFIG.boss.slowSpeedMultiplier;
   if (brick.kind !== 'BOSS') return resolveBrickDescentSpeed(brick.speedClass, speedProgress);
+  if (brick.isFinalBoss) return (brick.finalBossInitialSpeed ?? 0)
+    + (brick.finalBossAcceleration ?? 0) * (brick.finalBossElapsedSeconds ?? 0);
   if (brick.bossArrivalPhase === 'RUSH') return getMaximumConfiguredRushSpeed();
   if (brick.bossArrivalPhase === 'DECELERATING') {
     const progress = Math.max(0, Math.min(1,
@@ -307,19 +361,33 @@ export function advanceBrickField(
   densityLevel: number = GAME_CONFIG.progression.startingLevel,
   speedProgress = 0,
   callbacks: BrickFieldCallbacks | ((contact: FrozenBrickContact) => void) = {},
-): boolean {
+): void {
   const resolvedCallbacks: BrickFieldCallbacks = typeof callbacks === 'function'
     ? { onFrozenBrickContact: callbacks }
     : callbacks;
   const frozenContacts: FrozenBrickContact[] = [];
-  const activeBoss = getActiveBoss(field);
+  const activeBoss = getActiveNormalBoss(field);
   const allBricks = field.columns.flat();
   for (const column of field.columns) {
     for (let index = column.length - 1; index >= 0; index -= 1) {
       const brick = column[index];
       if (brick.iceCollisionKills !== undefined) continue;
+      if (brick.kind === 'BOSS') {
+        brick.bossPaddleContactCooldownSeconds = Math.max(0,
+          (brick.bossPaddleContactCooldownSeconds ?? 0) - deltaSeconds);
+      }
       const descentSpeed = getBossDescentSpeed(brick, speedProgress);
       let nextY = brick.y + descentSpeed * deltaSeconds;
+      if (brick.isFinalBoss) {
+        const duration = brick.finalBossDurationSeconds ?? GAME_CONFIG.boss.finalBossLeadSeconds;
+        const elapsed = Math.min(duration, (brick.finalBossElapsedSeconds ?? 0) + deltaSeconds);
+        brick.finalBossElapsedSeconds = elapsed;
+        nextY = (brick.finalBossInitialY ?? brick.y)
+          + (brick.finalBossInitialSpeed ?? 0) * elapsed
+          + 0.5 * (brick.finalBossAcceleration ?? 0) * elapsed * elapsed;
+        brick.y = nextY;
+        continue;
+      }
       const brickBelow = allBricks
         .filter((candidate) => candidate !== brick
           && field.columns[candidate.column].includes(candidate)
@@ -385,13 +453,11 @@ export function advanceBrickField(
     ));
   }
 
-  for (const column of field.columns) {
-    for (const brick of column) {
-      if (brick.y + brick.height >= getBrickFailureBoundaryY()) return true;
-    }
-  }
-
-  const reservedColumns = getReservedBossColumns(field, resolvedCallbacks.queuedBossStartColumn);
+  const reservedColumns = getReservedBossColumns(
+    field,
+    resolvedCallbacks.queuedBossStartColumn,
+    resolvedCallbacks.reservedFinalBossStartColumn,
+  );
   const allowedColumns = new Set(Array.from({ length: GAME_CONFIG.bricks.columns }, (_, index) => index)
     .filter((index) => !reservedColumns.has(index)));
   if (!activeBoss && resolvedCallbacks.queuedBossStartColumn !== undefined
@@ -401,12 +467,11 @@ export function advanceBrickField(
       generateFormation(field, getBrickSpawnY(), true, densityLevel, reservedColumns);
       resolvedCallbacks.onBossPreGapGenerated?.(rowId);
     }
-    return false;
+    return;
   }
   if (allowedColumns.size > 0 && hasFormationEntryClearance(field, allowedColumns)) {
     generateFormation(field, getBrickSpawnY(), true, densityLevel, reservedColumns);
   }
-  return false;
 }
 
 export function damageBrick(field: BrickFieldState, brick: BrickState, damage: number): number {
@@ -417,6 +482,14 @@ export function damageBrick(field: BrickFieldState, brick: BrickState, damage: n
   if (brick.hp > 0) return 0;
   column.splice(index, 1);
   return brick.xpValue;
+}
+
+export function removeBrick(field: BrickFieldState, brick: BrickState): boolean {
+  const column = field.columns[brick.column];
+  const index = column?.indexOf(brick) ?? -1;
+  if (index < 0) return false;
+  column.splice(index, 1);
+  return true;
 }
 
 export function getActiveBrickCount(field: BrickFieldState): number {

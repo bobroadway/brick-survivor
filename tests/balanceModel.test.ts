@@ -35,7 +35,19 @@ assert(defaults.ball.speed === GAME_CONFIG.ball.speed, 'Ball speed default drift
 assert(defaults.board.columns === GAME_CONFIG.bricks.columns, 'Column default drifted from game config');
 assert(defaults.board.verticalPitch === GAME_CONFIG.bricks.brickHeight + GAME_CONFIG.bricks.verticalEdgeGap,
   'Vertical pitch default drifted from game geometry');
-assert(defaults.boss.hp === 25 && defaults.armored.hp === 2, 'Boss/Armor defaults drifted');
+assert(defaults.boss.hp === 50 && defaults.armored.hp === 2, 'Boss/Armor defaults drifted');
+assert(defaults.playerSurvival.maxHp === 10
+  && defaults.playerSurvival.finalBallLostDamage === 5
+  && defaults.playerSurvival.normalBrickLostDamage === 6
+  && defaults.playerSurvival.normalBrickPaddleDamage === 3
+  && defaults.playerSurvival.armoredBrickLostDamage === 8
+  && defaults.playerSurvival.armoredBrickPaddleDamage === 6
+  && defaults.playerSurvival.bossLostDamage === 10
+  && defaults.playerSurvival.bossContactPlayerDamage === 3
+  && defaults.playerSurvival.bossContactBossDamage === 3
+  && defaults.playerSurvival.bossContactCooldownSeconds === 1
+  && defaults.playerSurvival.levelUpHeal === 1,
+'Player survival-resource defaults drifted from canonical config');
 assert(Object.values(defaults.powers).every((level) => level === 0), 'Power defaults were not all zero');
 
 const early = cloneBalanceSettings(defaults); early.timeSeconds = 0;
@@ -109,7 +121,8 @@ assert(earlyReport.ballContactsPerSecond.max > earlyReport.ballContactsPerSecond
   'Maximum Ball contact rate was not a ceiling');
 
 assert(getGunMaxDps(5) >= getGunMaxDps(4) && getGunMaxDps(1) > 0, 'Gun cadence math was non-monotonic');
-near(getGunMaxDps(1), 1 / GAME_CONFIG.powers.gunReloadSeconds, 'Gun Lv1 cadence');
+near(getGunMaxDps(1), 2 / GAME_CONFIG.powers.gunReloadSecondsByLevel[0], 'Gun Lv1 cadence');
+near(getGunMaxDps(3), 4 / (GAME_CONFIG.powers.gunReloadSecondsByLevel[2] + GAME_CONFIG.powers.gunShotIntervalSeconds), 'Gun Lv3 cadence');
 near(getMissileMaxDps(1), 1 / GAME_CONFIG.powers.missileReloadSeconds, 'Missile Lv1 cadence');
 for (let level = 1; level <= GAME_CONFIG.powers.maxLevel; level += 1) {
   assert(getMissileSpec(level).reloadSeconds === 12, `Missile Lv${level} did not use canonical 12-second reload`);
@@ -182,3 +195,9 @@ assert(JSON.stringify(reset.speed.start) === JSON.stringify({ SLOW: 2, MEDIUM: 3
 assert(JSON.stringify(reset.speed.max) === JSON.stringify({ SLOW: 12, MEDIUM: 14, FAST: 17, RUSH: 21 }),
   'Reset did not restore canonical maximum class speeds');
 assert(reset.boss.entranceSpeed === 27, 'Reset did not restore canonical Boss entrance speed');
+assert(JSON.stringify(reset.speed.weights) === JSON.stringify({ SLOW: 40, MEDIUM: 30, FAST: 20, RUSH: 10 }),
+  'Reset did not restore canonical speed-class weights');
+near(getWeightedAverageSpeed(reset.speed.start, { SLOW: .4, MEDIUM: .3, FAST: .2, RUSH: .1 }), 3,
+  'Starting weighted speed');
+near(getWeightedAverageSpeed(reset.speed.max, { SLOW: .4, MEDIUM: .3, FAST: .2, RUSH: .1 }), 14.5,
+  'Maximum weighted speed');

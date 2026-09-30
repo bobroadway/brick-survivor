@@ -1,7 +1,7 @@
 import type { BrickState } from './brickField';
 import type { BrickDestruction } from './combat';
 import { GAME_CONFIG } from './config';
-import { getElectricSpec, getMissileSpec, getWindSpec } from './gameplayRules';
+import { getElectricSpec, getMissileSpec, getWindFootprint, getWindSpec } from './gameplayRules';
 
 function getCenterX(bounds: { x: number; width: number }): number {
   return bounds.x + bounds.width / 2;
@@ -93,14 +93,14 @@ export function selectWindTargets(
   const sourceCenterX = getCenterX(source);
   const sourceCenterY = getCenterY(source);
   if (spec.widening) {
+    const footprint = new Set(getWindFootprint(level)
+      .map(({ column, row }) => `${column}:${row}`));
     return bricks
       .filter((brick) => {
-        const spacesAbove = (sourceCenterY - getCenterY(brick)) / verticalPitch;
-        if (spacesAbove <= 0 || spacesAbove > spec.farRows) return false;
-        const columnsAway = Math.abs(getCenterX(brick) - sourceCenterX) / horizontalPitch;
-        return spacesAbove <= spec.nearRows
-          ? columnsAway <= spec.nearHalfWidthColumns + 0.5
-          : columnsAway <= spec.farHalfWidthColumns + 0.5;
+        if (getCenterY(brick) < GAME_CONFIG.playfield.top) return false;
+        const relativeRow = Math.round((getCenterY(brick) - sourceCenterY) / verticalPitch);
+        const relativeColumn = Math.round((getCenterX(brick) - sourceCenterX) / horizontalPitch);
+        return footprint.has(`${relativeColumn}:${relativeRow}`);
       })
       .sort((left, right) => right.y - left.y || left.x - right.x || left.id.localeCompare(right.id));
   }

@@ -1,7 +1,7 @@
-import type { BrickState } from './brickField';
+import { spawnFinalBoss, type BrickState } from './brickField';
 import { GAME_CONFIG } from './config';
 import type { GameState } from './gameState';
-import { getCanonicalBrickSpeedTimingRuleParameters, getSpeedRampEndSecondsForRules } from './gameplayRules';
+import { getBrickSpeedProgress } from './survivalDifficulty';
 
 export function isBossBrick(brick: Pick<BrickState, 'kind'>): boolean {
   return brick.kind === 'BOSS';
@@ -13,46 +13,55 @@ function nextBossRandom(state: GameState): number {
   return director.lotteryGeneratorState / 0x100000000;
 }
 
-export function updateBossDirector(state: GameState): void {
-  const director = state.bossDirector;
-  while (director.nextCheckpointIndex < GAME_CONFIG.boss.checkpointSeconds.length
-    && state.survivalTimeSeconds >= GAME_CONFIG.boss.checkpointSeconds[director.nextCheckpointIndex]) {
-    director.armedOpportunities += 1;
-    director.nextCheckpointIndex += 1;
-  }
-  const finalBossTime = getSpeedRampEndSecondsForRules(getCanonicalBrickSpeedTimingRuleParameters());
-  if (!director.finalBossTriggered && state.survivalTimeSeconds >= finalBossTime) {
-    director.finalBossTriggered = true;
-    director.finalBossPending = true;
-  }
-  if (director.finalBossPending && !director.bossQueued && !director.activeBossId) {
-    queueBoss(state);
-    director.finalBossPending = false;
-  }
+export function getFinalBossTimeSeconds(): number {
+  return GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.boss.finalBossLeadSeconds;
+}
+
+function chooseBossColumn(state: GameState): number {
+  const minimum = GAME_CONFIG.boss.edgeExcludedColumns;
+  const maximum = GAME_CONFIG.bricks.columns
+    - GAME_CONFIG.boss.edgeExcludedColumns - GAME_CONFIG.boss.widthColumns;
+  return minimum + Math.floor(nextBossRandom(state) * (maximum - minimum + 1));
 }
 
 function queueBoss(state: GameState): void {
   const director = state.bossDirector;
-  const minimum = GAME_CONFIG.boss.edgeExcludedColumns;
-  const maximum = GAME_CONFIG.bricks.columns
-    - GAME_CONFIG.boss.edgeExcludedColumns - GAME_CONFIG.boss.widthColumns;
-  director.queuedStartColumn = minimum + Math.floor(nextBossRandom(state) * (maximum - minimum + 1));
+  director.queuedStartColumn = chooseBossColumn(state);
   director.bossQueued = true;
   director.bossPreGapGenerated = false;
   director.bossPreGapRowId = undefined;
 }
 
+export function updateBossDirector(state: GameState): void {
+  const director = state.bossDirector;
+  const finalBossTime = getFinalBossTimeSeconds();
+  const preparationTime = finalBossTime - GAME_CONFIG.boss.finalBossLeadSeconds;
+  if (director.finalBossStartColumn === undefined && state.survivalTimeSeconds >= preparationTime) {
+    director.finalBossStartColumn = chooseBossColumn(state);
+  }
+  if (!director.finalBossTriggered && state.survivalTimeSeconds >= finalBossTime) {
+    director.finalBossTriggered = true;
+    const duration = Math.max(GAME_CONFIG.fixedStepSeconds,
+      GAME_CONFIG.survival.winTimeSeconds - state.survivalTimeSeconds);
+    spawnFinalBoss(state.brickField, director.finalBossStartColumn ?? chooseBossColumn(state),
+      duration, getBrickSpeedProgress(state.survivalTimeSeconds));
+  }
+}
+
 /** One deterministic lottery roll for one destroyed ordinary brick. */
 export function recordOrdinaryBrickDestruction(state: GameState): void {
   const director = state.bossDirector;
-  if (director.armedOpportunities <= 0 || director.bossQueued || director.activeBossId) return;
+  if (state.survivalTimeSeconds < GAME_CONFIG.boss.firstLotterySeconds
+    || state.survivalTimeSeconds >= getFinalBossTimeSeconds()
+    || state.survivalTimeSeconds < director.ordinaryLotteryCooldownUntilSeconds
+    || director.bossQueued || director.activeNormalBossId) return;
   if (nextBossRandom(state) >= GAME_CONFIG.boss.killLotteryChance) return;
   queueBoss(state);
-  director.armedOpportunities -= 1;
 }
 
 export function recordBossSpawned(state: GameState, boss: BrickState): void {
-  state.bossDirector.activeBossId = boss.id;
+  if (boss.isFinalBoss) return;
+  state.bossDirector.activeNormalBossId = boss.id;
   state.bossDirector.bossQueued = false;
   state.bossDirector.bossPreGapGenerated = false;
   state.bossDirector.bossPreGapRowId = undefined;
@@ -65,7 +74,11 @@ export function recordBossDamage(brick: BrickState): void {
 }
 
 export function recordBossRemoved(state: GameState, boss: BrickState): void {
-  state.bossDirector.activeBossId = undefined;
+  if (!boss.isFinalBoss && state.bossDirector.activeNormalBossId === boss.id) {
+    state.bossDirector.activeNormalBossId = undefined;
+    state.bossDirector.ordinaryLotteryCooldownUntilSeconds = state.survivalTimeSeconds
+      + GAME_CONFIG.boss.lotteryRearmSeconds;
+  }
   state.bossDeathEffects.push({
     x: boss.x, y: boss.y, width: boss.width, height: boss.height,
     displayHp: boss.displayHp ?? boss.hp,
@@ -73,6 +86,15 @@ export function recordBossRemoved(state: GameState, boss: BrickState): void {
     frozen: boss.iceState === 'FROZEN',
     remainingSeconds: GAME_CONFIG.boss.deathEffectSeconds,
   });
+}
+
+/** Clears authoritative Boss ownership without kill rewards or death presentation. */
+export function recordBossEscaped(state: GameState, boss: BrickState): void {
+  if (!boss.isFinalBoss && state.bossDirector.activeNormalBossId === boss.id) {
+    state.bossDirector.activeNormalBossId = undefined;
+    state.bossDirector.ordinaryLotteryCooldownUntilSeconds = state.survivalTimeSeconds
+      + GAME_CONFIG.boss.lotteryRearmSeconds;
+  }
 }
 
 export function updateBossPresentation(state: GameState, unscaledDeltaSeconds: number): void {
@@ -93,6 +115,7 @@ export function updateBossPresentation(state: GameState, unscaledDeltaSeconds: n
   }
   for (let index = state.bossDeathEffects.length - 1; index >= 0; index -= 1) {
     const effect = state.bossDeathEffects[index];
+    const displayWasAlreadyZero = effect.displayHp === 0;
     effect.remainingSeconds -= unscaledDeltaSeconds;
     effect.displayHpStepTimerSeconds += unscaledDeltaSeconds;
     while (effect.displayHp > 0
@@ -100,6 +123,6 @@ export function updateBossPresentation(state: GameState, unscaledDeltaSeconds: n
       effect.displayHpStepTimerSeconds -= GAME_CONFIG.boss.hpDisplayStepSeconds;
       effect.displayHp -= 1;
     }
-    if (effect.remainingSeconds <= 0) state.bossDeathEffects.splice(index, 1);
+    if (effect.remainingSeconds <= 0 && displayWasAlreadyZero) state.bossDeathEffects.splice(index, 1);
   }
 }

@@ -7,10 +7,10 @@ import {
   isDangerBrick,
   smoothDangerIntensity,
 } from '../../simulation/dangerPresentation';
-import { continueLifeLost, resolveFinalBallLoss } from '../../simulation/gameFlow';
 import { createInitialGameState, type GameState } from '../../simulation/gameState';
 import { isFrozenBrick, isPendingFreezeBrick } from '../../simulation/iceBall';
 import { getTransientEffectAlpha } from '../../simulation/transientEffect';
+import { getHealthColor, getHealthFraction } from '../../simulation/playerHealthPresentation';
 import {
   acquirePower,
   banPowerChoice,
@@ -51,9 +51,10 @@ const PROJECTILE_COLORS = { GUN: 0xe7ecf3, ELECTRIC: 0xffd54f, MISSILE: 0xff8a3d
 const FIRE_EFFECT_COLOR = 0xef5350;
 const WIND_EFFECT_COLOR = 0x76a982;
 const DANGER_VIGNETTE_TEXTURE_KEY = 'danger-vignette-gradient';
+const PLAYER_DAMAGE_FLASH_TEXTURE_KEY = 'player-damage-flash-gradient';
 const HUD_LAYOUT = {
-  rowCenterY: GAME_CONFIG.height - 30,
-  leftPadding: 52,
+  healthBarCenterY: GAME_CONFIG.height - 46,
+  xpBarCenterY: GAME_CONFIG.height - 30,
   xpBarCenterX: GAME_CONFIG.width / 2,
   xpBarWidth: 320,
   xpBarHeight: 8,
@@ -69,17 +70,19 @@ export class GameScene extends Phaser.Scene {
   private wallGraphics!: Phaser.GameObjects.Graphics;
   private dangerGraphics!: Phaser.GameObjects.Graphics;
   private dangerVignette!: Phaser.GameObjects.Image;
+  private playerDamageFlash!: Phaser.GameObjects.Image;
   private readonly ballVisuals = new Map<number, Phaser.GameObjects.Arc>();
   private readonly levelUpGhosts = new Map<number, Array<{ x: number; y: number }>>();
   private survivalTimerText!: Phaser.GameObjects.Text;
-  private livesText!: Phaser.GameObjects.Text;
+  private hpText!: Phaser.GameObjects.Text;
   private progressionText!: Phaser.GameObjects.Text;
-  private bossHpText!: Phaser.GameObjects.Text;
+  private xpText!: Phaser.GameObjects.Text;
+  private healthBarFill!: Phaser.GameObjects.Rectangle;
+  private readonly bossHpTexts: Phaser.GameObjects.Text[] = [];
   private xpBarFill!: Phaser.GameObjects.Rectangle;
   private pauseHintText!: Phaser.GameObjects.Text;
+  private loadoutHintText!: Phaser.GameObjects.Text;
   private pauseShade!: Phaser.GameObjects.Rectangle;
-  private statusShade!: Phaser.GameObjects.Rectangle;
-  private statusText!: Phaser.GameObjects.Text;
   private pauseMenu!: PauseMenu;
   private powerChoiceOverlay!: PowerChoiceOverlay;
   private buildOverlay!: BuildOverlay;
@@ -96,6 +99,13 @@ export class GameScene extends Phaser.Scene {
   private lastDisplayedSurvivalSecond = -1;
   private lastHudLevel = -1;
   private lastHudXp = -1;
+  private lastHudHp = -1;
+  private lastHudMaxHp = -1;
+  private observedDamageEventId = 0;
+  private playerDamageFlashElapsedSeconds = Number.POSITIVE_INFINITY;
+  private playerHitElapsedSeconds = Number.POSITIVE_INFINITY;
+  private playerHitJitterX = 0;
+  private playerDamagePresentationDirty = false;
 
   constructor() { super('GameScene'); }
 
@@ -106,37 +116,50 @@ export class GameScene extends Phaser.Scene {
     this.graphics = this.add.graphics().setDepth(0.1);
     this.dangerVignette = this.createDangerVignette().setDepth(0.5).setAlpha(0);
     this.dangerGraphics = this.add.graphics().setDepth(0.75);
+    this.playerDamageFlash = this.createPlayerDamageFlash().setDepth(6).setAlpha(0);
     this.renderQuality = new RenderQualityManager(this);
     this.gameInput = new GameInput(
       this,
       () => isSimulationRunning(this.session),
       (code) => this.handleShellKey(code),
       () => this.pauseIfRunning(),
-      () => this.handlePrimaryPointerDown(),
+      () => false,
     );
     const xpBarLeft = HUD_LAYOUT.xpBarCenterX - HUD_LAYOUT.xpBarWidth / 2;
     const xpBarRight = HUD_LAYOUT.xpBarCenterX + HUD_LAYOUT.xpBarWidth / 2;
     this.survivalTimerText = this.renderQuality.addText(
       xpBarRight + HUD_LAYOUT.groupGap,
-      HUD_LAYOUT.rowCenterY,
+      HUD_LAYOUT.xpBarCenterY,
       '0:00', {
       color: '#aeb8c8', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
     }).setOrigin(0, 0.5).setDepth(10);
-    this.livesText = this.renderQuality.addText(HUD_LAYOUT.leftPadding, HUD_LAYOUT.rowCenterY, '', {
+    this.hpText = this.renderQuality.addText(xpBarLeft - HUD_LAYOUT.groupGap, HUD_LAYOUT.healthBarCenterY, '', {
+      color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
+    }).setOrigin(1, 0.5).setDepth(10);
+    this.renderQuality.addText(350, HUD_LAYOUT.healthBarCenterY, 'HP', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '16px', fontStyle: 'bold',
     }).setOrigin(0, 0.5).setDepth(10);
     this.progressionText = this.renderQuality.addText(
       xpBarLeft - HUD_LAYOUT.groupGap,
-      HUD_LAYOUT.rowCenterY,
+      HUD_LAYOUT.xpBarCenterY,
       '', {
       color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '14px', fontStyle: 'bold',
     }).setOrigin(1, 0.5).setDepth(10);
-    this.bossHpText = this.renderQuality.addText(0, 0, '', {
-      color: '#221d14', fontFamily: 'Consolas, monospace', fontSize: '22px', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(2).setVisible(false);
+    this.xpText = this.renderQuality.addText(
+      xpBarRight + HUD_LAYOUT.groupGap,
+      HUD_LAYOUT.xpBarCenterY,
+      '', {
+      color: '#d4dbe5', fontFamily: 'Consolas, monospace', fontSize: '14px', fontStyle: 'bold',
+    }).setOrigin(0, 0.5).setDepth(10);
+    this.survivalTimerText.setPosition(xpBarRight + 120, HUD_LAYOUT.xpBarCenterY);
+    for (let index = 0; index < 2; index += 1) {
+      this.bossHpTexts.push(this.renderQuality.addText(0, 0, '', {
+        color: '#221d14', fontFamily: 'Consolas, monospace', fontSize: '22px', fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(2).setVisible(false));
+    }
     const clipWidth = GAME_CONFIG.playfield.right - GAME_CONFIG.playfield.left;
     const clipHeight = GAME_CONFIG.playfield.bottom - GAME_CONFIG.playfield.top;
-    Phaser.Actions.AddMaskShape([this.graphics, this.dangerGraphics, this.bossHpText], {
+    Phaser.Actions.AddMaskShape([this.graphics, this.dangerGraphics, ...this.bossHpTexts], {
       shape: 'rectangle',
       aspectRatio: clipWidth / clipHeight,
       region: new Phaser.Geom.Rectangle(
@@ -148,33 +171,43 @@ export class GameScene extends Phaser.Scene {
     });
     this.add.rectangle(
       HUD_LAYOUT.xpBarCenterX,
-      HUD_LAYOUT.rowCenterY,
+      HUD_LAYOUT.healthBarCenterY,
+      HUD_LAYOUT.xpBarWidth,
+      HUD_LAYOUT.xpBarHeight,
+      0x273243,
+    ).setDepth(10);
+    this.healthBarFill = this.add.rectangle(
+      xpBarLeft,
+      HUD_LAYOUT.healthBarCenterY,
+      HUD_LAYOUT.xpBarWidth,
+      HUD_LAYOUT.xpBarHeight,
+      0x00ff00,
+    ).setOrigin(0, 0.5).setDepth(11);
+    this.add.rectangle(
+      HUD_LAYOUT.xpBarCenterX,
+      HUD_LAYOUT.xpBarCenterY,
       HUD_LAYOUT.xpBarWidth,
       HUD_LAYOUT.xpBarHeight,
       0x273243,
     ).setDepth(10);
     this.xpBarFill = this.add.rectangle(
       xpBarLeft,
-      HUD_LAYOUT.rowCenterY,
+      HUD_LAYOUT.xpBarCenterY,
       HUD_LAYOUT.xpBarWidth,
       HUD_LAYOUT.xpBarHeight,
       0x78c6d0,
     )
       .setOrigin(0, 0.5).setDepth(11);
-    this.pauseHintText = this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'ESC — PAUSE', {
+    this.pauseHintText = this.renderQuality.addText(54, 690, 'ESC - PAUSE', {
+      color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
+    }).setOrigin(0, 0).setDepth(10);
+    this.loadoutHintText = this.renderQuality.addText(GAME_CONFIG.width - 54, 690, 'TAB - LOADOUT', {
       color: '#8491a6', fontFamily: 'Consolas, monospace', fontSize: '14px',
     }).setOrigin(1, 0).setDepth(10);
     this.pauseShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.58)
       .setOrigin(0)
       .setDepth(20)
       .setVisible(false);
-    this.statusShade = this.add.rectangle(0, 0, GAME_CONFIG.width, GAME_CONFIG.height, 0x080a0f, 0.4)
-      .setOrigin(0)
-      .setDepth(20)
-      .setVisible(false);
-    this.statusText = this.renderQuality.addText(GAME_CONFIG.width / 2, GAME_CONFIG.height / 2, '', {
-      align: 'center', color: '#f0eee6', fontFamily: 'Arial, sans-serif', fontSize: '40px', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(21).setVisible(false);
     this.pauseMenu = new PauseMenu(this, this.renderQuality, {
       start: () => this.startRun(),
       resume: () => this.resumeGame(),
@@ -206,7 +239,7 @@ export class GameScene extends Phaser.Scene {
       this.renderQuality.destroy();
       this.removeDisplayModeListener?.();
     });
-    this.updateLivesText();
+    this.updateHpText();
     this.updateProgressionHud();
     this.applyPhasePresentation();
     this.drawGame();
@@ -214,12 +247,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, deltaMilliseconds: number): void {
+    const frameSeconds = Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
+    this.consumePlayerDamageEvents();
+    this.advancePlayerDamagePresentation(frameSeconds);
     if (!isSimulationRunning(this.session)) {
       this.accumulator = 0;
+      if (this.isPlayerDamagePresentationActive()) this.drawGame();
       return;
     }
 
-    const frameSeconds = Math.min(deltaMilliseconds / 1000, GAME_CONFIG.maxFrameSeconds);
     this.dangerEffectElapsedSeconds += frameSeconds;
     const worldTimeScale = this.getWorldTimeScale();
     this.accumulator += frameSeconds;
@@ -240,7 +276,7 @@ export class GameScene extends Phaser.Scene {
         GAME_CONFIG.fixedStepSeconds * worldTimeScale,
       );
       this.accumulator -= GAME_CONFIG.fixedStepSeconds;
-      if (outcome === SimulationStepOutcome.BrickOverflow) {
+      if (outcome === SimulationStepOutcome.PlayerDefeated) {
         this.clearLevelUpTransitionGhosts();
         enterGameOver(this.session);
         this.applyPhasePresentation();
@@ -252,17 +288,15 @@ export class GameScene extends Phaser.Scene {
         this.applyPhasePresentation();
         break;
       }
-      if (outcome === SimulationStepOutcome.FinalBallLost) {
-        this.handleFinalBallLost();
-        break;
-      }
       if (this.session.phase === GamePhase.Running && this.state.powers.pendingSelections > 0) {
         this.beginLevelUpSlowdown();
       }
     }
+    this.consumePlayerDamageEvents();
     this.advanceLevelUpTransition(frameSeconds);
     this.updateDangerVignette(frameSeconds);
     this.drawGame();
+    this.updateHpText();
     this.updateProgressionHud();
     this.updateSurvivalTimerText();
   }
@@ -274,7 +308,9 @@ export class GameScene extends Phaser.Scene {
     if (running) this.gameInput.enterRunning();
     else this.gameInput.enterPaused();
     this.pauseShade.setVisible(menuMode !== null);
-    this.pauseHintText.setVisible(running);
+    const showGameplayHints = this.session.phase === GamePhase.Running;
+    this.pauseHintText.setVisible(showGameplayHints);
+    this.loadoutHintText.setVisible(showGameplayHints);
     if (menuMode) this.pauseMenu.show(menuMode);
     else this.pauseMenu.hide();
     if (this.session.phase === GamePhase.LevelUp) {
@@ -288,9 +324,6 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.session.phase === GamePhase.Build) this.buildOverlay.show(this.state);
     else this.buildOverlay.hide();
-    const statusMessage = this.getStatusMessage();
-    this.statusShade.setVisible(statusMessage !== null);
-    this.statusText.setText(statusMessage ?? '').setVisible(statusMessage !== null);
     document.body.classList.toggle('game-paused', !running);
     this.drawGame();
   }
@@ -316,8 +349,9 @@ export class GameScene extends Phaser.Scene {
     this.clearLevelUpTransitionGhosts();
     this.state = createInitialGameState();
     this.session = createSessionState();
+    this.resetPlayerDamagePresentation();
     launchReadyBall(this.session);
-    this.updateLivesText();
+    this.updateHpText();
     this.updateProgressionHud();
     this.applyPhasePresentation();
   }
@@ -343,10 +377,6 @@ export class GameScene extends Phaser.Scene {
       } else if (['Escape', 'Enter', 'NumpadEnter'].includes(code)) {
         this.pauseIfRunning();
       }
-      return;
-    }
-    if (this.session.phase === GamePhase.LifeLost) {
-      if (code === 'Space') this.continueLifeLostAttempt();
       return;
     }
     if (this.session.phase === GamePhase.LevelUp) {
@@ -388,12 +418,6 @@ export class GameScene extends Phaser.Scene {
     else this.navigatePauseMenu(code);
   }
 
-  private handlePrimaryPointerDown(): boolean {
-    if (this.session.phase !== GamePhase.LifeLost) return false;
-    this.continueLifeLostAttempt();
-    return true;
-  }
-
   private selectPower(id: PowerId): void {
     if (this.session.phase !== GamePhase.LevelUp || !acquirePower(this.state, id)) return;
     if (prepareNextPowerSelection(this.state.powers)) {
@@ -417,11 +441,6 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     beginLevelUpSpeedup(this.session);
-    this.applyPhasePresentation();
-  }
-
-  private continueLifeLostAttempt(): void {
-    if (!continueLifeLost(this.state, this.session)) return;
     this.applyPhasePresentation();
   }
 
@@ -469,6 +488,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawGame(): void {
+    this.wallGraphics.setPosition(this.playerHitJitterX, 0);
+    this.graphics.setPosition(this.playerHitJitterX, 0);
+    this.dangerGraphics.setPosition(this.playerHitJitterX, 0);
+    this.dangerVignette.setPosition(this.playerHitJitterX, 0);
     const graphics = this.graphics.clear();
     const walls = this.wallGraphics.clear();
     this.dangerGraphics.clear();
@@ -491,26 +514,46 @@ export class GameScene extends Phaser.Scene {
         this.drawBrick(graphics, brick, color, field.top);
       }
     }
-    const boss = this.state.brickField.columns.flat().find(({ kind }) => kind === 'BOSS');
-    if (boss && boss.y + boss.height > field.top) {
+    for (const effect of this.state.fallingBrickEffects) {
+      const color = effect.iceState === 'FROZEN'
+        ? GAME_CONFIG.rendering.frozenBrickFillColor
+        : effect.iceState === 'PENDING_FREEZE'
+          ? GAME_CONFIG.rendering.pendingFrozenBrickFillColor
+          : effect.kind === 'BOSS'
+            ? GAME_CONFIG.rendering.bossFillColor
+            : GAME_CONFIG.rendering.brickSpeedClassColors[effect.speedClass];
+      this.drawBrick(graphics, {
+        ...effect, rowId: -1, column: 0, xpValue: 0,
+      }, color, field.top);
+    }
+    const bosses = this.state.brickField.columns.flat()
+      .filter(({ kind, y, height }) => kind === 'BOSS' && y + height > field.top);
+    for (let index = 0; index < this.bossHpTexts.length; index += 1) {
+      const boss = bosses[index];
+      const text = this.bossHpTexts[index];
+      if (!boss) {
+        text.setVisible(false).setAlpha(1);
+        continue;
+      }
       const jolt = (boss.bossHitJoltRemainingSeconds ?? 0) > 0
         ? Math.sin(this.dangerEffectElapsedSeconds * 90) * 2 : 0;
-      this.bossHpText.setText(String(boss.displayHp ?? boss.hp))
-        .setPosition(boss.x + boss.width / 2 + jolt, boss.y + boss.height / 2)
+      text.setText(String(boss.displayHp ?? boss.hp))
+        .setPosition(boss.x + boss.width / 2 + jolt + this.playerHitJitterX, boss.y + boss.height / 2)
+        .setAlpha(1)
         .setVisible(true);
-    } else this.bossHpText.setVisible(false);
+    }
     for (const effect of this.state.bossDeathEffects) {
       const alpha = Math.max(0, effect.remainingSeconds / GAME_CONFIG.boss.deathEffectSeconds);
       graphics.fillStyle(effect.frozen ? GAME_CONFIG.rendering.frozenBrickFillColor : GAME_CONFIG.rendering.bossFillColor, alpha * 0.55);
       graphics.fillRoundedRect(effect.x, effect.y, effect.width, effect.height, 7);
     }
-    if (!boss && this.state.bossDeathEffects.length > 0) {
+    if (bosses.length === 0 && this.state.bossDeathEffects.length > 0) {
       const effect = this.state.bossDeathEffects[this.state.bossDeathEffects.length - 1];
-      this.bossHpText.setText(String(effect.displayHp))
-        .setPosition(effect.x + effect.width / 2, effect.y + effect.height / 2)
+      this.bossHpTexts[0].setText(String(effect.displayHp))
+        .setPosition(effect.x + effect.width / 2 + this.playerHitJitterX, effect.y + effect.height / 2)
         .setAlpha(Math.max(0, effect.remainingSeconds / GAME_CONFIG.boss.deathEffectSeconds))
         .setVisible(true);
-    } else this.bossHpText.setAlpha(1);
+    }
     for (const projectile of this.state.projectiles) {
       graphics.lineStyle(3, PROJECTILE_COLORS[projectile.kind], 1);
       if (projectile.kind === 'ELECTRIC') {
@@ -583,6 +626,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.session.phase === GamePhase.LevelUpSpeedup) this.drawContractingLevelUpGhosts(graphics);
     this.syncBallVisuals();
+    this.playerDamagePresentationDirty = false;
   }
 
   private drawDangerBrickEffects(
@@ -724,6 +768,86 @@ export class GameScene extends Phaser.Scene {
     return this.add.image(0, 0, DANGER_VIGNETTE_TEXTURE_KEY).setOrigin(0);
   }
 
+  private createPlayerDamageFlash(): Phaser.GameObjects.Image {
+    if (!this.textures.exists(PLAYER_DAMAGE_FLASH_TEXTURE_KEY)) {
+      const texture = this.textures.createCanvas(
+        PLAYER_DAMAGE_FLASH_TEXTURE_KEY,
+        GAME_CONFIG.width,
+        GAME_CONFIG.height,
+      );
+      if (!texture) throw new Error('Unable to create player-damage flash texture.');
+      const context = texture.context;
+      const centerX = HUD_LAYOUT.xpBarCenterX;
+      const centerY = HUD_LAYOUT.healthBarCenterY;
+      const radial = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, 500);
+      radial.addColorStop(0, 'rgba(255, 0, 0, 1)');
+      radial.addColorStop(0.45, 'rgba(255, 0, 0, 0.55)');
+      radial.addColorStop(1, 'rgba(255, 0, 0, 0)');
+      context.fillStyle = radial;
+      context.fillRect(0, GAME_CONFIG.height * 2 / 3, GAME_CONFIG.width, GAME_CONFIG.height / 3);
+      context.globalCompositeOperation = 'destination-in';
+      const vertical = context.createLinearGradient(0, GAME_CONFIG.height * 2 / 3, 0, centerY);
+      vertical.addColorStop(0, 'rgba(255, 255, 255, 0)');
+      vertical.addColorStop(1, 'rgba(255, 255, 255, 1)');
+      context.fillStyle = vertical;
+      context.fillRect(0, GAME_CONFIG.height * 2 / 3, GAME_CONFIG.width, GAME_CONFIG.height / 3);
+      context.globalCompositeOperation = 'source-over';
+      texture.refresh();
+    }
+    return this.add.image(0, 0, PLAYER_DAMAGE_FLASH_TEXTURE_KEY).setOrigin(0);
+  }
+
+  private consumePlayerDamageEvents(): void {
+    if (this.state.playerDamageEventId === this.observedDamageEventId) return;
+    this.observedDamageEventId = this.state.playerDamageEventId;
+    const fadeIn = GAME_CONFIG.rendering.playerDamageFlashFadeInSeconds;
+    this.playerDamageFlashElapsedSeconds = this.playerDamageFlash.alpha > 0 ? fadeIn : 0;
+    this.playerHitElapsedSeconds = 0;
+  }
+
+  private advancePlayerDamagePresentation(deltaSeconds: number): void {
+    const rendering = GAME_CONFIG.rendering;
+    const previousFlashAlpha = this.playerDamageFlash.alpha;
+    const previousJitterX = this.playerHitJitterX;
+    const flashDuration = rendering.playerDamageFlashFadeInSeconds
+      + rendering.playerDamageFlashFadeOutSeconds;
+    this.playerDamageFlashElapsedSeconds += deltaSeconds;
+    let flashAlpha = 0;
+    if (this.playerDamageFlashElapsedSeconds < rendering.playerDamageFlashFadeInSeconds) {
+      flashAlpha = rendering.playerDamageFlashPeakAlpha
+        * this.playerDamageFlashElapsedSeconds / rendering.playerDamageFlashFadeInSeconds;
+    } else if (this.playerDamageFlashElapsedSeconds < flashDuration) {
+      flashAlpha = rendering.playerDamageFlashPeakAlpha * (1
+        - (this.playerDamageFlashElapsedSeconds - rendering.playerDamageFlashFadeInSeconds)
+          / rendering.playerDamageFlashFadeOutSeconds);
+    }
+    this.playerDamageFlash.setAlpha(Math.max(0, flashAlpha));
+
+    this.playerHitElapsedSeconds += deltaSeconds;
+    const hitDuration = GAME_CONFIG.boss.hitJoltSeconds;
+    const hitProgress = Math.min(1, this.playerHitElapsedSeconds / hitDuration);
+    this.playerHitJitterX = hitProgress < 1
+      ? Math.sin(this.playerHitElapsedSeconds * 90)
+        * rendering.playerDamageJitterPixels * (1 - hitProgress)
+      : 0;
+    this.playerDamagePresentationDirty = previousFlashAlpha !== this.playerDamageFlash.alpha
+      || previousJitterX !== this.playerHitJitterX;
+  }
+
+  private isPlayerDamagePresentationActive(): boolean {
+    return this.playerDamagePresentationDirty
+      || this.playerDamageFlash.alpha > 0 || this.playerHitJitterX !== 0;
+  }
+
+  private resetPlayerDamagePresentation(): void {
+    this.observedDamageEventId = this.state.playerDamageEventId;
+    this.playerDamageFlashElapsedSeconds = Number.POSITIVE_INFINITY;
+    this.playerHitElapsedSeconds = Number.POSITIVE_INFINITY;
+    this.playerHitJitterX = 0;
+    this.playerDamagePresentationDirty = true;
+    this.playerDamageFlash.setAlpha(0);
+  }
+
   private updateSurvivalTimerText(): void {
     const totalSeconds = Math.floor(this.state.survivalTimeSeconds);
     if (totalSeconds === this.lastDisplayedSurvivalSecond) return;
@@ -741,7 +865,7 @@ export class GameScene extends Phaser.Scene {
         visual = this.add.circle(ball.x, ball.y, ball.radius, 0xf0eee6).setDepth(1);
         this.ballVisuals.set(ball.id, visual);
       }
-      visual.setPosition(ball.x, ball.y).setRadius(ball.radius).setVisible(true);
+      visual.setPosition(ball.x + this.playerHitJitterX, ball.y).setRadius(ball.radius).setVisible(true);
     }
     for (const [id, visual] of this.ballVisuals) {
       if (visual.visible) continue;
@@ -750,15 +874,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private handleFinalBallLost(): void {
-    this.clearLevelUpTransitionGhosts();
-    resolveFinalBallLoss(this.state, this.session);
-    this.updateLivesText();
-    this.applyPhasePresentation();
-  }
-
-  private updateLivesText(): void {
-    this.livesText.setText(`LIVES: ${this.state.lives}`);
+  private updateHpText(): void {
+    if (this.state.playerHp === this.lastHudHp && this.state.playerMaxHp === this.lastHudMaxHp) return;
+    this.lastHudHp = this.state.playerHp;
+    this.lastHudMaxHp = this.state.playerMaxHp;
+    this.hpText.setText(`${this.state.playerHp} / ${this.state.playerMaxHp}`);
+    this.healthBarFill
+      .setScale(getHealthFraction(this.state.playerHp, this.state.playerMaxHp), 1)
+      .setFillStyle(getHealthColor(this.state.playerHp, this.state.playerMaxHp));
   }
 
   private updateProgressionHud(): void {
@@ -766,15 +889,9 @@ export class GameScene extends Phaser.Scene {
     if (level === this.lastHudLevel && currentXp === this.lastHudXp) return;
     this.lastHudLevel = level;
     this.lastHudXp = currentXp;
-    this.progressionText.setText(`LEVEL ${level}   XP ${currentXp} / ${xpRequiredForNextLevel}`);
-    this.xpBarFill.setScale(currentXp / xpRequiredForNextLevel, 1);
-  }
-
-  private getStatusMessage(): string | null {
-    switch (this.session.phase) {
-      case GamePhase.LifeLost: return 'BALL LOST\n\nSPACE OR CLICK TO CONTINUE';
-      default: return null;
-    }
+    this.progressionText.setText(`LEVEL ${level}`);
+    this.xpText.setText(`${currentXp} / ${xpRequiredForNextLevel} EXP`);
+    this.xpBarFill.setScale(Math.max(0, Math.min(1, currentXp / xpRequiredForNextLevel)), 1);
   }
 
   private beginLevelUpSlowdown(): void {

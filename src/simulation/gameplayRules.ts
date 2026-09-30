@@ -29,10 +29,9 @@ export interface RelativeCell { column: number; row: number }
 export interface PressureAssistRuleParameters { graceSeconds: number; maximumProgress: number; progressPerSecond: number }
 export interface PowerRuleParameters {
   maxLevel: number;
-  gunShotsByLevel: readonly number[];
-  gunAlternatingPortsLevel: number;
+  gunVolleyPairsByLevel: readonly number[];
+  gunReloadSecondsByLevel: readonly number[];
   gunShotIntervalSeconds: number;
-  gunReloadSeconds: number;
   gunProjectileDamage: number;
   projectileSpeed: number;
   piercingCapacityByLevel: readonly number[];
@@ -153,15 +152,13 @@ function levelIndex(level: number, maxLevel: number): number {
 }
 
 export function getGunSpec(level: number, powers: PowerRuleParameters = GAME_CONFIG.powers) {
-  const shots = level <= 0 ? 0 : powers.gunShotsByLevel[levelIndex(level, powers.maxLevel)] ?? 0;
-  const alternatingPorts = level >= powers.gunAlternatingPortsLevel;
+  const index = levelIndex(level, powers.maxLevel);
+  const volleyPairs = level <= 0 ? 0 : powers.gunVolleyPairsByLevel[index] ?? 0;
   return {
-    shots,
-    origins: Array.from({ length: shots }, (_, index) => alternatingPorts
-      ? (index % 2 === 0 ? 'LEFT' : 'RIGHT')
-      : 'CENTER') as Array<'LEFT' | 'RIGHT' | 'CENTER'>,
+    volleyPairs,
+    bulletsPerVolley: volleyPairs * 2,
     shotIntervalSeconds: powers.gunShotIntervalSeconds,
-    reloadSeconds: powers.gunReloadSeconds,
+    reloadSeconds: level <= 0 ? 0 : powers.gunReloadSecondsByLevel[index] ?? 0,
     projectileDamage: powers.gunProjectileDamage,
     projectileSpeed: powers.projectileSpeed,
   };

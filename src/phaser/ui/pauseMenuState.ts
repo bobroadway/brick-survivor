@@ -25,7 +25,9 @@ export function createPauseMenuState(): PauseMenuState {
 }
 
 export function getMenuTitle(mode: MenuMode): string {
-  return mode === 'GAME_OVER' ? 'YOU DIED' : 'BRICK SURVIVOR';
+  if (mode === 'GAME_OVER') return 'YOU DIED';
+  if (mode === 'WIN') return 'BRICKS SURVIVED!';
+  return 'BRICK SURVIVOR';
 }
 
 export function resetPauseMenuState(state: PauseMenuState, mode: MenuMode): void {

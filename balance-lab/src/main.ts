@@ -4,13 +4,14 @@ import {
   cloneBalanceSettings,
   createGameDefaultBalanceSettings,
   getDerivedDensity,
+  getGunMaxDps,
   type BalanceReport,
   type BalanceSettings,
   type MetricSet,
 } from '../../src/balance/model';
 import { POWER_DEFINITIONS, type PowerId } from '../../src/simulation/powers';
 import { GAME_CONFIG } from '../../src/simulation/config';
-import { BRICK_SPEED_CLASSES, canSpeedClassSpawnArmored, getSpeedRampEndSecondsForRules } from '../../src/simulation/gameplayRules';
+import { BRICK_SPEED_CLASSES, canSpeedClassSpawnArmored, getGunSpec, getSpeedRampEndSecondsForRules } from '../../src/simulation/gameplayRules';
 import './style.css';
 
 const app = document.querySelector<HTMLElement>('#app');
@@ -91,9 +92,11 @@ function render(): void {
         ${field({ label: 'Boss enabled', path: 'boss.enabled', value: settings.boss.enabled, kind: 'checkbox' })}
         ${field({ label: 'Boss HP', path: 'boss.hp', value: settings.boss.hp })}
         ${field({ label: 'Boss lottery', path: 'boss.lotteryChance', value: settings.boss.lotteryChance, kind: 'percent' })}
+        ${field({ label: 'First lottery', path: 'boss.firstLotterySeconds', value: settings.boss.firstLotterySeconds, kind: 'time' })}
+        ${field({ label: 'Re-arm after leaving', path: 'boss.rearmSeconds', value: settings.boss.rearmSeconds, kind: 'time' })}
+        ${field({ label: 'Final Boss lead', path: 'boss.finalBossLeadSeconds', value: settings.boss.finalBossLeadSeconds, kind: 'time' })}
         ${field({ label: 'Boss speed ×', path: 'boss.speedMultiplier', value: settings.boss.speedMultiplier })}
         ${field({ label: 'Boss entrance speed', path: 'boss.entranceSpeed', value: settings.boss.entranceSpeed })}
-        ${settings.boss.checkpoints.map((value,index) => field({ label: `Checkpoint ${index+1}`, path: `boss.checkpoints.${index}`, value, kind: 'time' })).join('')}
       </div><p class="hint">Armor remains a modifier on eligible ${BRICK_SPEED_CLASSES.filter(canSpeedClassSpawnArmored).join('/')} bricks. Boss pressure is reported separately from continuous conveyor HP/s.</p></section>
       <section><h2>GAME PARAMETERS — BALL / ASSIST</h2><div class="fields">
         ${field({ label: 'Ball speed', path: 'ball.speed', value: settings.ball.speed })}
@@ -102,6 +105,19 @@ function render(): void {
         ${field({ label: 'Assist max ramp', path: 'pressureAssist.maximumProgress', value: settings.pressureAssist.maximumProgress, kind: 'percent' })}
         ${field({ label: 'Assist ramp/sec', path: 'pressureAssist.progressPerSecond', value: settings.pressureAssist.progressPerSecond, kind: 'percent' })}
       </div></section>
+      <section><h2>GAME PARAMETERS — PLAYER SURVIVAL</h2><div class="fields">
+        ${field({ label: 'Max HP', path: 'playerSurvival.maxHp', value: settings.playerSurvival.maxHp })}
+        ${field({ label: 'Final Ball lost damage', path: 'playerSurvival.finalBallLostDamage', value: settings.playerSurvival.finalBallLostDamage })}
+        ${field({ label: 'Normal Brick lost', path: 'playerSurvival.normalBrickLostDamage', value: settings.playerSurvival.normalBrickLostDamage })}
+        ${field({ label: 'Normal Brick tank', path: 'playerSurvival.normalBrickPaddleDamage', value: settings.playerSurvival.normalBrickPaddleDamage })}
+        ${field({ label: 'Armored Brick lost', path: 'playerSurvival.armoredBrickLostDamage', value: settings.playerSurvival.armoredBrickLostDamage })}
+        ${field({ label: 'Armored Brick tank', path: 'playerSurvival.armoredBrickPaddleDamage', value: settings.playerSurvival.armoredBrickPaddleDamage })}
+        ${field({ label: 'Boss lost', path: 'playerSurvival.bossLostDamage', value: settings.playerSurvival.bossLostDamage })}
+        ${field({ label: 'Boss contact — player', path: 'playerSurvival.bossContactPlayerDamage', value: settings.playerSurvival.bossContactPlayerDamage })}
+        ${field({ label: 'Boss contact — Boss', path: 'playerSurvival.bossContactBossDamage', value: settings.playerSurvival.bossContactBossDamage })}
+        ${field({ label: 'Boss contact cooldown', path: 'playerSurvival.bossContactCooldownSeconds', value: settings.playerSurvival.bossContactCooldownSeconds })}
+        ${field({ label: 'Level-up heal', path: 'playerSurvival.levelUpHeal', value: settings.playerSurvival.levelUpHeal })}
+      </div><p class="hint">Canonical survival-resource facts only; not converted into throughput or DPS.</p></section>
       <section class="wide"><h2>POWERS — 0 MEANS NOT OWNED</h2><div class="power-grid">
         ${POWER_DEFINITIONS.map(({id,name}) => `<label class="field"><span>${name}</span><select data-path="powers.${id}" data-kind="number">${Array.from({length:GAME_CONFIG.powers.maxLevel+1},(_,level)=>`<option ${settings.powers[id]===level?'selected':''}>${level}</option>`).join('')}</select></label>`).join('')}
         ${field({ label: 'Split acquired at', path: 'splitAcquiredAtSeconds', value: settings.splitAcquiredAtSeconds, kind: 'time' })}
@@ -136,6 +152,15 @@ function render(): void {
 
 function renderOutputs(current: BalanceSettings, report: BalanceReport): string {
   const boss = report.boss;
+  const occupancy = report.density / current.board.columns;
+  const gunLevels = Array.from({ length: GAME_CONFIG.powers.maxLevel }, (_, index) => {
+    const level = index + 1;
+    const spec = getGunSpec(level);
+    const maximumDps = getGunMaxDps(level);
+    const estimatedDps = maximumDps * (current.assumptions.gunLikelyBaseHitRate
+      + current.assumptions.gunLikelyDensityHitRate * occupancy);
+    return `<tr><td>${level}</td><td>${spec.bulletsPerVolley}</td><td>${spec.volleyPairs}</td><td>${number(spec.reloadSeconds, 1)}s</td><td>${number(maximumDps, 3)}</td><td>${number(estimatedDps, 3)}</td></tr>`;
+  }).join('');
   const timeline = current.assumptions.reportingTimelineSeconds.map(snapshot => {
     const next = cloneBalanceSettings(current); next.timeSeconds = snapshot;
     const result = calculateBalance(next, { includePowerReports: false });
@@ -150,10 +175,11 @@ function renderOutputs(current: BalanceSettings, report: BalanceReport): string 
       ${metric('Formations/s', number(report.formation.formationsPerSecond.likely))}${metric('Generated bricks/s', number(report.formation.generatedBricksPerSecond.likely))}
       ${metric('Average HP/brick', number(report.averageHpPerBrick,3))}${metric('LIKELY BOARD HP/s', number(report.boardHpPerSecond.likely), 'Expected conveyor HP throughput using sampled spatial-frontier speed.')}
       ${metric('MEDIAN BOARD HP/s', number(report.boardHpPerSecond.median))}${metric('MAX BOARD HP/s', number(report.boardHpPerSecond.max), 'Best legal homogeneous speed/HP composition at maximum selected density; impossible RUSH+Armor is excluded.')}
-    </div><p class="hint">Boss: normal checkpoints ${current.boss.checkpoints.map(time).join(' / ')} at ${number(current.boss.lotteryChance * 100, 0)}% per qualifying kill · guaranteed final Boss ${time(boss.guaranteedFinalBossTime)}${boss.guaranteedFinalBossDue ? ' (due)' : ''} · cruise ${number(boss.cruiseSpeed)} px/s · max-RUSH arrival ${number(boss.rushArrivalSpeed)} px/s · discrete HP ${number(boss.discreteHp,0)}. Guaranteed Boss is separate from lottery pressure; spatial entry is not modeled.</p></section>
+    </div><p class="hint">Boss: recurring lottery from ${time(current.boss.firstLotterySeconds)} at ${number(current.boss.lotteryChance * 100, 0)}% per qualifying kill · re-arms ${time(current.boss.rearmSeconds)} after a normal Boss leaves · mandatory Final Boss ${time(boss.guaranteedFinalBossTime)}${boss.guaranteedFinalBossDue ? ' (due)' : ''}, immediate and allowed alongside one normal Boss · cruise ${number(boss.cruiseSpeed)} px/s · max-RUSH arrival ${number(boss.rushArrivalSpeed)} px/s · discrete HP ${number(boss.discreteHp,0)}.</p></section>
     <section><h2>BASE BALL / SHARED EVENTS</h2><table><thead><tr><th></th><th>MAX</th><th>MEDIAN</th><th>LIKELY</th></tr></thead><tbody>${row('Contacts/s',report.ballContactsPerSecond)}${row('Base Ball DPS',report.baseBallDps)}${row('Elemental proc events/s',report.elementalProcEventsPerSecond)}</tbody></table><p class="hint">Active Balls: ${report.activeBallCount}. Elemental events are shared by Electric, Fire, and Wind and include legal Ball kills, Ice freezes, and direct Ball shatters.</p></section>
     <section><h2>COMBINED BUILD</h2><table><thead><tr><th></th><th>MAX</th><th>MEDIAN</th><th>LIKELY</th></tr></thead><tbody>${row('Base Ball',report.combined.baseBall)}${row('Power contribution',report.combined.powerContribution)}${row('TOTAL PLAYER DPS',report.combined.total)}</tbody></table><div class="metrics">${metric('Likely board HP/s',number(report.boardHpPerSecond.likely))}${metric('Likely player DPS',number(report.combined.total.likely))}${metric('NET PRESSURE',number(report.comparison.likelyNetPressure),'Board HP/s minus player DPS. Positive means unresolved HP accumulation.',)}${metric('MAX net',number(report.comparison.maxNetPressure))}</div><p class="hint">Negative net pressure does not guarantee survival; spatial distribution, trapped trajectories, low fast bricks, and discrete Bosses remain decisive. This is a throughput model.</p></section>
     <section class="wide"><h2>POWER CONTRIBUTIONS — INCREMENTAL UNDER CURRENT BUILD</h2><table><thead><tr><th>POWER</th><th>LV</th><th>MAX DPS</th><th>MEDIAN</th><th>LIKELY</th><th>NOTES</th></tr></thead><tbody>${report.powers.map(power=>`<tr><td>${power.name}</td><td>${power.level}</td><td>${number(power.contribution.max)}</td><td>${number(power.contribution.median)}</td><td>${number(power.contribution.likely)}</td><td>${power.id==='PADDLE_SIZE'?`Direct 0; throughput ×${number(power.throughputMultiplier??1,3)}`:power.id==='ICE_BALL'?`Capacity ${power.iceCollisionCapacity??0}; freeze ${number(power.frozenBricksPerSecond??0)}/s; control ${number(power.pressureReductionHpPerSecond??0)} HP·s/s`:''}</td></tr>`).join('')}</tbody></table></section>
+    <section class="wide"><h2>CANONICAL GUN PROGRESSION</h2><table><thead><tr><th>LV</th><th>BULLETS / VOLLEY</th><th>PAIRED STEPS</th><th>RELOAD</th><th>MAX DPS</th><th>ESTIMATED DPS</th></tr></thead><tbody>${gunLevels}</tbody></table><p class="hint">Each paired step fires simultaneous left/right bullets. Estimated DPS applies the current likely Gun hit-rate assumptions at the current board density.</p></section>
     <section class="wide"><h2>PRESSURE TRAJECTORY</h2><table><thead><tr><th>TIME</th><th>BOARD HP/s</th><th>PLAYER LIKELY</th><th>NET</th></tr></thead><tbody>${timeline}</tbody></table></section>
     <section class="wide definitions"><div><b>MAX</b>Theoretical practical ceiling with targets available and efficient legal paths.</div><div><b>MEDIAN</b>50th percentile across deterministic sampled plausible layouts.</div><div><b>LIKELY</b>Arithmetic mean under current density and assumptions.</div><div><b>BOARD HP/s</b>Continuous ordinary conveyor HP entering per second; Boss HP is separate.</div><div><b>NET PRESSURE</b>Board HP/s minus likely player DPS; not an exact survival prediction.</div></section>`;
 }

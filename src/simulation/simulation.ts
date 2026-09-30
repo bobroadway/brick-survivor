@@ -1,6 +1,12 @@
 import { GAME_CONFIG } from './config';
-import { advanceBrickField, type BrickState } from './brickField';
-import { recordBossDamage, recordBossSpawned, updateBossDirector, updateBossPresentation } from './boss';
+import {
+  advanceBrickField,
+  getBossDescentSpeed,
+  getBrickFailureBoundaryY,
+  removeBrick,
+  type BrickState,
+} from './brickField';
+import { recordBossDamage, recordBossEscaped, recordBossSpawned, updateBossDirector, updateBossPresentation } from './boss';
 import {
   advanceBrickPressureAssist,
   getEffectiveBrickSpeedProgress,
@@ -11,7 +17,8 @@ import {
   type BrickDestruction,
 } from './combat';
 import { applyRoutedBrickDamage } from './destructionRouting';
-import { spawnSplitBalls, type BallState, type GameState } from './gameState';
+import { prepareSingleBall, spawnSplitBalls, type BallState, type GameState } from './gameState';
+import { damagePlayer } from './gameFlow';
 import { createElectricVisualAmplitude } from './electricVisual';
 import {
   advanceFrozenBrickSafety,
@@ -46,8 +53,7 @@ export interface SimulationInput {
 
 export enum SimulationStepOutcome {
   None,
-  FinalBallLost,
-  BrickOverflow,
+  PlayerDefeated,
   Win,
 }
 
@@ -127,6 +133,80 @@ function updatePaddle(state: GameState, input: SimulationInput, deltaSeconds: nu
   const minX = GAME_CONFIG.playfield.left + paddle.width / 2;
   const maxX = GAME_CONFIG.playfield.right - paddle.width / 2;
   paddle.x = Math.min(maxX, Math.max(minX, paddle.x));
+}
+
+function brickOverlapsPaddle(state: GameState, brick: BrickState): boolean {
+  const paddleLeft = state.paddle.x - state.paddle.width / 2;
+  const paddleRight = state.paddle.x + state.paddle.width / 2;
+  const paddleTop = state.paddle.y - state.paddle.height / 2;
+  const paddleBottom = state.paddle.y + state.paddle.height / 2;
+  return brick.x < paddleRight
+    && brick.x + brick.width > paddleLeft
+    && brick.y < paddleBottom
+    && brick.y + brick.height > paddleTop;
+}
+
+function retainFallingBrickVisual(state: GameState, brick: BrickState, velocityY: number): void {
+  state.fallingBrickEffects.push({
+    id: brick.id, x: brick.x, y: brick.y, width: brick.width, height: brick.height,
+    velocityY, speedClass: brick.speedClass, kind: brick.kind, hp: brick.hp,
+    armored: brick.armored, iceState: brick.iceState, isFinalBoss: brick.isFinalBoss,
+  });
+}
+
+function updateFallingBrickEffects(state: GameState, deltaSeconds: number): void {
+  for (let index = state.fallingBrickEffects.length - 1; index >= 0; index -= 1) {
+    const effect = state.fallingBrickEffects[index];
+    effect.velocityY += GAME_CONFIG.rendering.escapedBrickFallAcceleration * deltaSeconds;
+    effect.y += effect.velocityY * deltaSeconds;
+    if (effect.y >= GAME_CONFIG.height) state.fallingBrickEffects.splice(index, 1);
+  }
+}
+
+function hasActiveArmor(brick: BrickState): boolean {
+  return brick.armored === true && brick.hp >= GAME_CONFIG.bricks.armoredHp;
+}
+
+export function resolveBrickThreats(state: GameState, speedProgress = 0): void {
+  const bricks = state.brickField.columns.flat();
+  for (const brick of bricks) {
+    const isActive = state.brickField.columns[brick.column]?.includes(brick) ?? false;
+    if (!isActive) continue;
+    const touchesPaddle = brickOverlapsPaddle(state, brick);
+    const crossedLossBoundary = brick.y + brick.height >= getBrickFailureBoundaryY();
+    if (brick.kind === 'BOSS') {
+      if (!touchesPaddle) {
+        brick.bossPaddleWasTouching = false;
+        brick.bossPaddleContactCooldownSeconds = 0;
+      } else if (!brick.bossPaddleWasTouching
+        || (brick.bossPaddleContactCooldownSeconds ?? 0) <= 0) {
+        brick.bossPaddleWasTouching = true;
+        brick.bossPaddleContactCooldownSeconds = GAME_CONFIG.boss.paddleContactCooldownSeconds;
+        damagePlayer(state, GAME_CONFIG.boss.paddleContactDamage);
+        applyRoutedBrickDamage(state, brick, GAME_CONFIG.boss.paddleContactDamage, 'PADDLE');
+      }
+      const stillActive = state.brickField.columns[brick.column]?.includes(brick) ?? false;
+      if (stillActive && crossedLossBoundary && removeBrick(state.brickField, brick)) {
+        retainFallingBrickVisual(state, brick, getBossDescentSpeed(brick, speedProgress));
+        recordBossEscaped(state, brick);
+        damagePlayer(state, GAME_CONFIG.player.bossLostDamage);
+      }
+      continue;
+    }
+    if (touchesPaddle) {
+      damagePlayer(state, hasActiveArmor(brick)
+        ? GAME_CONFIG.player.armoredBrickPaddleDamage
+        : GAME_CONFIG.player.normalBrickPaddleDamage);
+      applyRoutedBrickDamage(state, brick, Number.POSITIVE_INFINITY, 'PADDLE');
+      continue;
+    }
+    if (crossedLossBoundary && removeBrick(state.brickField, brick)) {
+      retainFallingBrickVisual(state, brick, getBossDescentSpeed(brick, speedProgress));
+      damagePlayer(state, hasActiveArmor(brick)
+        ? GAME_CONFIG.player.armoredBrickLostDamage
+        : GAME_CONFIG.player.normalBrickLostDamage);
+    }
+  }
 }
 
 function findBrickById(state: GameState, id: string): BrickState | undefined {
@@ -306,18 +386,18 @@ function triggerIceBallElementalProc(
   });
 }
 
-function spawnGunShot(state: GameState, origin: 'LEFT' | 'RIGHT' | 'CENTER'): void {
+function spawnGunPair(state: GameState): void {
   const spec = getGunSpec(getPowerLevel(state.powers, 'GUN'));
   const halfWidth = state.paddle.width / 2;
   const inset = Math.min(GAME_CONFIG.powers.gunMountInset, halfWidth);
   const mountOffset = halfWidth - inset;
-  const x = origin === 'CENTER' ? state.paddle.x
-    : state.paddle.x + (origin === 'LEFT' ? -mountOffset : mountOffset);
-  state.projectiles.push({
-    id: state.nextProjectileId++, kind: 'GUN', x,
-    y: state.paddle.y - state.paddle.height / 2,
-    velocity: { x: 0, y: -spec.projectileSpeed }, damage: spec.projectileDamage,
-  });
+  for (const direction of [-1, 1]) {
+    state.projectiles.push({
+      id: state.nextProjectileId++, kind: 'GUN', x: state.paddle.x + direction * mountOffset,
+      y: state.paddle.y - state.paddle.height / 2,
+      velocity: { x: 0, y: -spec.projectileSpeed }, damage: spec.projectileDamage,
+    });
+  }
 }
 
 function updateGun(state: GameState, deltaSeconds: number): void {
@@ -327,15 +407,14 @@ function updateGun(state: GameState, deltaSeconds: number): void {
   const powers = state.powers;
   if (powers.gunReloadSeconds > 0) {
     powers.gunReloadSeconds = Math.max(0, powers.gunReloadSeconds - deltaSeconds);
-    if (powers.gunReloadSeconds === 0) powers.gunShotsRemaining = spec.shots;
+    if (powers.gunReloadSeconds === 0) powers.gunVolleyStepsRemaining = spec.volleyPairs;
     return;
   }
   powers.gunShotCooldownSeconds = Math.max(0, powers.gunShotCooldownSeconds - deltaSeconds);
-  if (powers.gunShotsRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
-  const shotIndex = spec.shots - powers.gunShotsRemaining;
-  spawnGunShot(state, spec.origins[shotIndex] ?? 'CENTER');
-  powers.gunShotsRemaining -= 1;
-  if (powers.gunShotsRemaining > 0) powers.gunShotCooldownSeconds = spec.shotIntervalSeconds;
+  if (powers.gunVolleyStepsRemaining <= 0 || powers.gunShotCooldownSeconds > 0) return;
+  spawnGunPair(state);
+  powers.gunVolleyStepsRemaining -= 1;
+  if (powers.gunVolleyStepsRemaining > 0) powers.gunShotCooldownSeconds = spec.shotIntervalSeconds;
   else powers.gunReloadSeconds = spec.reloadSeconds;
 }
 
@@ -858,9 +937,6 @@ export function stepSimulation(
   );
   updateBossDirector(state);
   updateBossPresentation(state, playerDeltaSeconds);
-  if (state.survivalTimeSeconds >= GAME_CONFIG.survival.winTimeSeconds) {
-    return SimulationStepOutcome.Win;
-  }
   updatePaddle(state, input, playerDeltaSeconds);
   advanceBrickPressureAssist(state.brickPressureAssist, worldDeltaSeconds);
   const nominalBrickSpeedProgress = getBrickSpeedProgress(state.survivalTimeSeconds);
@@ -868,18 +944,22 @@ export function stepSimulation(
     nominalBrickSpeedProgress,
     state.brickPressureAssist,
   );
-  if (advanceBrickField(
+  advanceBrickField(
     state.brickField,
     worldDeltaSeconds,
     state.progression.level,
     effectiveBrickSpeedProgress,
     {
       onFrozenBrickContact: (contact) => handleFrozenBrickContact(state, contact),
-      onPendingFreezeReady: (brick) => commitPendingFreeze(brick),
+      onPendingFreezeReady: (brick) => {
+        if (!brickOverlapsPaddle(state, brick)) commitPendingFreeze(brick);
+      },
       queuedBossStartColumn: state.bossDirector.bossQueued
         ? state.bossDirector.queuedStartColumn
         : undefined,
       onBossSpawned: (boss) => recordBossSpawned(state, boss),
+      reservedFinalBossStartColumn: !state.bossDirector.finalBossTriggered
+        ? state.bossDirector.finalBossStartColumn : undefined,
       bossPreGapGenerated: state.bossDirector.bossPreGapGenerated,
       bossPreGapRowId: state.bossDirector.bossPreGapRowId,
       onBossPreGapGenerated: (rowId) => {
@@ -887,9 +967,10 @@ export function stepSimulation(
         state.bossDirector.bossPreGapRowId = rowId;
       },
     },
-  )) {
-    return SimulationStepOutcome.BrickOverflow;
-  }
+  );
+  resolveBrickThreats(state, effectiveBrickSpeedProgress);
+  updateFallingBrickEffects(state, worldDeltaSeconds);
+  if (state.playerHp <= 0) return SimulationStepOutcome.PlayerDefeated;
   updateGun(state, worldDeltaSeconds);
   updateMissileFiring(state, worldDeltaSeconds);
   updateSplitting(state, worldDeltaSeconds);
@@ -906,5 +987,12 @@ export function stepSimulation(
     if (updateBall(state, state.balls[index], worldDeltaSeconds)) state.balls.splice(index, 1);
   }
   advanceFrozenBrickSafety(state, worldDeltaSeconds);
-  return state.balls.length === 0 ? SimulationStepOutcome.FinalBallLost : SimulationStepOutcome.None;
+  if (state.balls.length === 0) {
+    damagePlayer(state, GAME_CONFIG.player.finalBallLostDamage);
+    if (state.playerHp > 0) prepareSingleBall(state);
+  }
+  if (state.playerHp <= 0) return SimulationStepOutcome.PlayerDefeated;
+  return state.survivalTimeSeconds >= GAME_CONFIG.survival.winTimeSeconds
+    ? SimulationStepOutcome.Win
+    : SimulationStepOutcome.None;
 }

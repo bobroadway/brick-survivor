@@ -1,6 +1,8 @@
 import {
   recordBossRemoved,
+  recordBossSpawned,
   recordOrdinaryBrickDestruction,
+  getFinalBossTimeSeconds,
   updateBossDirector,
   updateBossPresentation,
 } from '../src/simulation/boss';
@@ -8,6 +10,7 @@ import {
   advanceBrickField,
   createBrickField,
   getActiveBoss,
+  getActiveBosses,
   getBossDescentSpeed,
   getMaximumConfiguredRushSpeed,
   getReservedFormationTargetCount,
@@ -19,6 +22,7 @@ import { resolveBrickDescentSpeed } from '../src/simulation/difficulty';
 import { createInitialGameState } from '../src/simulation/gameState';
 import { freezeBossAtZero } from '../src/simulation/iceBall';
 import { selectMissileTarget } from '../src/simulation/powerTargeting';
+import { SimulationStepOutcome, stepSimulation } from '../src/simulation/simulation';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -45,7 +49,7 @@ function verifyArmoredGeneration(): void {
 function verifyBossDirectorAndEntity(): void {
   const state = createInitialGameState();
   state.brickField.columns.forEach((column) => column.splice(0));
-  state.bossDirector.armedOpportunities = 1;
+  state.survivalTimeSeconds = GAME_CONFIG.boss.firstLotterySeconds;
   for (let roll = 0; roll < 1000 && !state.bossDirector.bossQueued; roll += 1) {
     recordOrdinaryBrickDestruction(state);
   }
@@ -69,16 +73,13 @@ function verifyBossDirectorAndEntity(): void {
       queuedBossStartColumn: startColumn,
       bossPreGapGenerated: true,
       bossPreGapRowId: gapRowId,
-      onBossSpawned: (boss) => {
-        state.bossDirector.activeBossId = boss.id;
-        state.bossDirector.bossQueued = false;
-      },
+      onBossSpawned: (boss) => recordBossSpawned(state, boss),
     });
   }
   const boss = getActiveBoss(state.brickField);
   assert(boss, 'queued boss did not spawn');
   assert(boss.width === 176 && boss.height === 68, 'boss footprint was not 3x3 pitches');
-  assert(boss.hp === 25 && boss.xpValue === 50, 'boss HP/XP tuning was incorrect');
+  assert(boss.hp === 50 && boss.xpValue === 50, 'boss HP/XP tuning was incorrect');
   assert(selectMissileTarget(boss.x, [boss], new Set()) === undefined, 'missile intentionally targeted boss');
   const originalY = boss.y;
   advanceBrickField(state.brickField, 1, 1, 0);
@@ -99,16 +100,16 @@ function verifyBossDirectorAndEntity(): void {
     && Math.abs(getBossDescentSpeed(boss, 0) - cruiseSpeed) < 1e-9,
   'boss did not settle at current half-SLOW speed');
   applyBrickDamage(state, boss, 3, 'GUN');
-  assert(boss.hp === 22 && boss.displayHp === 25, 'boss actual/display HP did not separate');
+  assert(boss.hp === 47 && boss.displayHp === 50, 'boss actual/display HP did not separate');
   updateBossPresentation(state, GAME_CONFIG.boss.hpDisplayStepSeconds * 2.1);
-  assert(boss.displayHp === 23, 'boss display HP skipped or failed to tick through integers');
+  assert(boss.displayHp === 48, 'boss display HP skipped or failed to tick through integers');
   state.progression.level = 30;
   state.progression.currentXp = 0;
   state.progression.xpRequiredForNextLevel = 200;
   applyBrickDamage(state, boss, 100, 'GUN');
   assert(state.progression.currentXp === 50, 'boss XP was not awarded exactly once');
   assert(state.bossDeathEffects.length === 1, 'boss death fade was not created');
-  updateBossPresentation(state, GAME_CONFIG.boss.hpDisplayStepSeconds * 23.1);
+  updateBossPresentation(state, GAME_CONFIG.boss.hpDisplayStepSeconds * 49.1);
   assert(state.bossDeathEffects[0].displayHp === 0,
     'boss death representation did not present the complete HP queue');
 }
@@ -122,7 +123,7 @@ function verifyFrozenBossShatter(): void {
   const boss = {
     id: 'boss:ice', rowId: 1, column: 8, x: 522, y: 100,
     width: 176, height: 68, speedClass: 'SLOW' as const,
-    hp: 25, displayHp: 25, xpValue: 50, kind: 'BOSS' as const,
+    hp: 50, displayHp: 50, xpValue: 50, kind: 'BOSS' as const,
   };
   state.brickField.columns[boss.column].push(boss);
   assert(freezeBossAtZero(boss, 1), 'lethal Ice Ball did not create a frozen zero-HP boss');
@@ -136,43 +137,109 @@ function verifyFrozenBossShatter(): void {
 }
 
 function verifyGuaranteedFinalBoss(): void {
-  const triggerTime = GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.brickSpeed.maxSpeedLeadSeconds;
+  const triggerTime = GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.boss.finalBossLeadSeconds;
   const available = createInitialGameState();
   available.survivalTimeSeconds = triggerTime;
   updateBossDirector(available);
   assert(available.bossDirector.finalBossTriggered, 'final Boss trigger was not recorded');
-  assert(available.bossDirector.bossQueued && !available.bossDirector.finalBossPending,
-    'final Boss was not queued immediately when no Boss was active');
-  const queuedColumn = available.bossDirector.queuedStartColumn;
+  const finalBoss = available.brickField.columns.flat().find(({ isFinalBoss }) => isFinalBoss);
+  assert(finalBoss, 'final Boss did not spawn immediately');
+  const finalBossId = finalBoss.id;
   updateBossDirector(available);
-  assert(available.bossDirector.queuedStartColumn === queuedColumn,
-    'final Boss trigger queued a duplicate Boss');
+  assert(available.brickField.columns.flat().filter(({ isFinalBoss }) => isFinalBoss).length === 1
+    && finalBoss.id === finalBossId, 'final Boss trigger spawned a duplicate Boss');
 
   const alreadyQueued = createInitialGameState();
   alreadyQueued.survivalTimeSeconds = triggerTime;
   alreadyQueued.bossDirector.bossQueued = true;
   alreadyQueued.bossDirector.queuedStartColumn = 6;
   updateBossDirector(alreadyQueued);
-  assert(alreadyQueued.bossDirector.finalBossPending
-    && alreadyQueued.bossDirector.queuedStartColumn === 6,
-  'guaranteed final Boss displaced an older queued Boss');
+  assert(alreadyQueued.bossDirector.queuedStartColumn === 6
+    && alreadyQueued.brickField.columns.flat().some(({ isFinalBoss }) => isFinalBoss),
+  'guaranteed final Boss displaced or waited for an older queued Boss');
 
   const blocked = createInitialGameState();
   blocked.survivalTimeSeconds = triggerTime;
-  blocked.bossDirector.activeBossId = 'boss:existing';
-  updateBossDirector(blocked);
-  assert(blocked.bossDirector.finalBossPending && !blocked.bossDirector.bossQueued,
-    'active Boss did not leave the guaranteed final Boss pending');
-  recordBossRemoved(blocked, {
+  const normalBoss = {
     id: 'boss:existing', rowId: 999, column: 8, x: 520, y: 100, width: 176, height: 68,
-    speedClass: 'SLOW', hp: 0, xpValue: 50, kind: 'BOSS',
-  });
+    speedClass: 'SLOW' as const, hp: 50, xpValue: 50, kind: 'BOSS' as const,
+  };
+  blocked.brickField.columns[normalBoss.column].push(normalBoss);
+  blocked.bossDirector.activeNormalBossId = normalBoss.id;
   updateBossDirector(blocked);
-  assert(blocked.bossDirector.bossQueued && !blocked.bossDirector.finalBossPending,
-    'pending final Boss did not queue after the active Boss was removed');
+  assert(blocked.brickField.columns.flat().filter(({ kind }) => kind === 'BOSS').length === 2,
+    'final Boss did not coexist with an active normal Boss');
+  recordBossRemoved(blocked, normalBoss);
+}
+
+function verifyRecurringLotteryAndCooldown(): void {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  state.survivalTimeSeconds = GAME_CONFIG.boss.firstLotterySeconds - 0.001;
+  for (let roll = 0; roll < 5000; roll += 1) recordOrdinaryBrickDestruction(state);
+  assert(!state.bossDirector.bossQueued, 'Boss lottery rolled before first eligibility');
+  state.survivalTimeSeconds = GAME_CONFIG.boss.firstLotterySeconds;
+  for (let roll = 0; roll < 5000 && !state.bossDirector.bossQueued; roll += 1) {
+    recordOrdinaryBrickDestruction(state);
+  }
+  assert(state.bossDirector.bossQueued, 'eligible recurring Boss lottery never succeeded');
+  const normalBoss = {
+    id: 'boss:cooldown', rowId: 77, column: 8, x: 520, y: 100, width: 176, height: 68,
+    speedClass: 'SLOW' as const, hp: 0, xpValue: 50, kind: 'BOSS' as const,
+  };
+  state.bossDirector.bossQueued = false;
+  state.bossDirector.activeNormalBossId = normalBoss.id;
+  recordBossRemoved(state, normalBoss);
+  const eligibleAgain = state.survivalTimeSeconds + GAME_CONFIG.boss.lotteryRearmSeconds;
+  state.survivalTimeSeconds = eligibleAgain - 0.001;
+  for (let roll = 0; roll < 5000; roll += 1) recordOrdinaryBrickDestruction(state);
+  assert(!state.bossDirector.bossQueued, 'Boss lottery rolled during re-arm cooldown');
+  state.survivalTimeSeconds = eligibleAgain;
+  for (let roll = 0; roll < 5000 && !state.bossDirector.bossQueued; roll += 1) {
+    recordOrdinaryBrickDestruction(state);
+  }
+  assert(state.bossDirector.bossQueued, 'Boss lottery did not re-arm after 60 seconds');
+}
+
+function verifyFinalBossTrajectoryAndDeadline(): void {
+  const state = createInitialGameState();
+  state.brickField.columns.forEach((column) => column.splice(0));
+  state.survivalTimeSeconds = getFinalBossTimeSeconds();
+  updateBossDirector(state);
+  const boss = getActiveBosses(state.brickField).find(({ isFinalBoss }) => isFinalBoss);
+  assert(boss?.isFinalBoss && boss.finalBossDurationSeconds === 60, 'Final Boss identity/duration mismatch');
+  const initialSpeed = getBossDescentSpeed(boss, 1);
+  const initialY = boss.y;
+  advanceBrickField(state.brickField, 30, 1, 1);
+  const midwaySpeed = getBossDescentSpeed(boss, 1);
+  assert(midwaySpeed > initialSpeed && boss.y > initialY, 'Final Boss did not accelerate linearly');
+  advanceBrickField(state.brickField, 30, 1, 1);
+  assert(Math.abs(boss.y + boss.height - GAME_CONFIG.playfield.bottom) < 1e-8,
+    'Final Boss did not reach the authoritative loss boundary at its deadline');
+
+  const deadline = createInitialGameState();
+  deadline.brickField.columns.forEach((column) => column.splice(0));
+  deadline.survivalTimeSeconds = getFinalBossTimeSeconds();
+  updateBossDirector(deadline);
+  const outcome = stepSimulation(deadline, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 }, 60, 60);
+  assert(outcome === SimulationStepOutcome.PlayerDefeated && deadline.playerHp === 0,
+    'Final Boss deadline loss did not resolve before WIN');
+
+  const killed = createInitialGameState();
+  killed.brickField.columns.forEach((column) => column.splice(0));
+  killed.survivalTimeSeconds = getFinalBossTimeSeconds();
+  updateBossDirector(killed);
+  const doomed = getActiveBosses(killed.brickField).find(({ isFinalBoss }) => isFinalBoss)!;
+  applyBrickDamage(killed, doomed, Number.POSITIVE_INFINITY, 'GUN');
+  killed.survivalTimeSeconds = GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.fixedStepSeconds;
+  assert(stepSimulation(killed, { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 },
+    GAME_CONFIG.fixedStepSeconds, GAME_CONFIG.fixedStepSeconds) === SimulationStepOutcome.Win,
+  'killed Final Boss prevented normal survival WIN');
 }
 
 verifyArmoredGeneration();
 verifyBossDirectorAndEntity();
 verifyFrozenBossShatter();
 verifyGuaranteedFinalBoss();
+verifyRecurringLotteryAndCooldown();
+verifyFinalBossTrajectoryAndDeadline();

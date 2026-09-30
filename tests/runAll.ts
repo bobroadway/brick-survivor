@@ -5,6 +5,8 @@ import './brickPressureAssist.test';
 import './dangerPresentation.test';
 import './gameplayRules.test';
 import './iceBall.test';
+import './paddleHp.test';
+import './playerHealthPresentation.test';
 import './powerChoiceNavigation.test';
 import './powerRefinement.test';
 import './survivalDifficulty.test';

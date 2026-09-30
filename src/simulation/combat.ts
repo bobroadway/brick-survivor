@@ -2,8 +2,9 @@ import { damageBrick, type BrickState } from './brickField';
 import type { GameState } from './gameState';
 import { awardRunXp } from './progression';
 import { isBossBrick, recordBossDamage, recordBossRemoved, recordOrdinaryBrickDestruction } from './boss';
+import { healPlayerForLevelGains } from './gameFlow';
 
-export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND' | 'MISSILE' | 'ICE';
+export type DamageSource = 'BALL' | 'GUN' | 'ELECTRIC' | 'FIRE' | 'WIND' | 'MISSILE' | 'ICE' | 'PADDLE';
 
 export interface BrickDestruction {
   source: DamageSource;
@@ -39,6 +40,7 @@ export function awardBrickDestruction(
   const xpAwarded = brick.xpValue;
   const rewards = awardRunXp(state.progression, xpAwarded);
   state.powers.pendingSelections += rewards.length;
+  healPlayerForLevelGains(state, rewards.length);
   if (isBossBrick(brick)) recordBossRemoved(state, brick);
   else recordOrdinaryBrickDestruction(state);
   return { source, x: brick.x, y: brick.y, width: brick.width, height: brick.height };

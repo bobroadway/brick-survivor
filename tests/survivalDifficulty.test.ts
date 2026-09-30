@@ -2,7 +2,6 @@ import { getBrickOccupancyRange } from '../src/simulation/brickField';
 import { advanceBrickPressureAssist, createBrickPressureAssistState } from '../src/simulation/brickPressureAssist';
 import { GAME_CONFIG } from '../src/simulation/config';
 import { resolveBrickDescentSpeed, type BrickSpeedClass } from '../src/simulation/difficulty';
-import { continueLifeLost, resolveFinalBallLoss } from '../src/simulation/gameFlow';
 import { createInitialGameState } from '../src/simulation/gameState';
 import { SimulationStepOutcome, stepSimulation } from '../src/simulation/simulation';
 import { createSessionState, enterWin, GamePhase, isSimulationRunning } from '../src/simulation/sessionState';
@@ -81,8 +80,8 @@ function testCanonicalSpeedsAndLevelBasedDensity(): void {
     weightedStartTotal += start[entry.speedClass] * entry.weight;
     totalWeight += entry.weight;
   }
-  assertNear(weightedStartTotal / totalWeight, 2.6, 'starting weighted average');
-  assertNear(weightedTotal / totalWeight, 13.45, 'maximum weighted average');
+  assertNear(weightedStartTotal / totalWeight, 3, 'starting weighted average');
+  assertNear(weightedTotal / totalWeight, 14.5, 'maximum weighted average');
   for (const timestamp of [840, 870, 899]) {
     for (const speedClass of Object.keys(maximum) as BrickSpeedClass[]) {
       assertNear(resolveBrickDescentSpeed(speedClass, getBrickSpeedProgress(timestamp)), maximum[speedClass],
@@ -139,33 +138,6 @@ function testPlayerLevelDecouplingAndWorldTimer(): void {
   assertNear(lowLevel.survivalTimeSeconds, before, 'zero world delta advanced survival time');
 }
 
-function testLifeLostPaddlePreservation(): void {
-  for (const x of [120, GAME_CONFIG.width / 2, 1160]) {
-    const state = createInitialGameState();
-    const session = createSessionState();
-    session.phase = GamePhase.Running;
-    state.paddle.x = x;
-    state.survivalTimeSeconds = 321;
-    resolveFinalBallLoss(state, session);
-    assert(String(session.phase) === GamePhase.LifeLost, 'life loss did not enter LIFE_LOST');
-    assert(continueLifeLost(state, session), 'life-loss continue failed');
-    assertNear(state.paddle.x, x, 'life-loss continue moved paddle');
-    assertNear(state.balls[0].x, x, 'replacement ball did not use paddle position');
-    assertNear(state.survivalTimeSeconds, 321, 'life loss reset survival timer');
-  }
-  const clamped = createInitialGameState();
-  const clampedSession = createSessionState();
-  clampedSession.phase = GamePhase.Running;
-  clamped.paddle.x = -100;
-  resolveFinalBallLoss(clamped, clampedSession);
-  assert(continueLifeLost(clamped, clampedSession), 'clamped life-loss continue failed');
-  assertNear(
-    clamped.paddle.x,
-    GAME_CONFIG.playfield.left + clamped.paddle.width / 2,
-    'invalid preserved paddle position did not use normal world clamp',
-  );
-}
-
 function testGraceAndWinOutcome(): void {
   const assist = createBrickPressureAssistState();
   advanceBrickPressureAssist(assist, 6.9);
@@ -178,7 +150,8 @@ function testGraceAndWinOutcome(): void {
   assertNear(assist.trappedBallSpeedBoost, 0.05, 'ball boost did not ramp after grace');
 
   const state = createInitialGameState();
-  state.bossDirector.activeBossId = 'boss:still-alive';
+  state.bossDirector.activeNormalBossId = 'boss:still-alive';
+  state.bossDirector.finalBossTriggered = true; // Final Boss was already spawned and defeated.
   state.survivalTimeSeconds = GAME_CONFIG.survival.winTimeSeconds - GAME_CONFIG.fixedStepSeconds / 2;
   const outcome = stepSimulation(
     state,
@@ -191,14 +164,13 @@ function testGraceAndWinOutcome(): void {
   const session = createSessionState();
   enterWin(session);
   assert(session.phase === GamePhase.Win && !isSimulationRunning(session), 'WIN did not freeze simulation');
-  assert(getMenuTitle('WIN') === 'BRICK SURVIVOR', 'WIN heading mismatch');
+  assert(getMenuTitle('WIN') === 'BRICKS SURVIVED!', 'WIN heading mismatch');
   assert(getMenuTitle('GAME_OVER') === 'YOU DIED', 'loss heading regressed');
   for (const suspendedPhase of [
     GamePhase.Ready,
     GamePhase.Paused,
     GamePhase.Build,
     GamePhase.LevelUp,
-    GamePhase.LifeLost,
     GamePhase.GameOver,
     GamePhase.Win,
   ]) {
@@ -211,5 +183,4 @@ testSurvivalPhasesAndSpeedCurve();
 testCanonicalSpeedsAndLevelBasedDensity();
 testConfigDerivedTwentyMinuteRamp();
 testPlayerLevelDecouplingAndWorldTimer();
-testLifeLostPaddlePreservation();
 testGraceAndWinOutcome();

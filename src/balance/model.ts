@@ -71,8 +71,17 @@ export interface BalanceSettings {
     max: Record<SpeedClass, number>;
   };
   armored: { enabled: boolean; chance: number; hp: number; xp: number };
-  boss: { enabled: boolean; hp: number; checkpoints: number[]; lotteryChance: number; speedMultiplier: number; entranceSpeed: number };
+  boss: {
+    enabled: boolean; hp: number; lotteryChance: number; speedMultiplier: number; entranceSpeed: number;
+    firstLotterySeconds: number; rearmSeconds: number; finalBossLeadSeconds: number;
+  };
   ball: { speed: number };
+  playerSurvival: {
+    maxHp: number; finalBallLostDamage: number; normalBrickLostDamage: number;
+    normalBrickPaddleDamage: number; armoredBrickLostDamage: number; armoredBrickPaddleDamage: number;
+    bossLostDamage: number; bossContactPlayerDamage: number; bossContactBossDamage: number;
+    bossContactCooldownSeconds: number; levelUpHeal: number;
+  };
   pressureAssist: { enabled: boolean; graceSeconds: number; maximumProgress: number; progressPerSecond: number };
   assumptions: BalanceModelAssumptions;
   powers: Record<PowerId, number>;
@@ -101,7 +110,7 @@ export interface BalanceReport {
   averageHpPerBrick: number;
   boardHpPerSecond: MetricSet;
   boss: {
-    applicable: boolean; checkpoint?: number; guaranteedFinalBossTime: number; guaranteedFinalBossDue: boolean;
+    applicable: boolean; guaranteedFinalBossTime: number; guaranteedFinalBossDue: boolean;
     expectedLotteryKills: number; discreteHp: number; amortizedHpPerSecond: number;
     cruiseSpeed: number; rushArrivalSpeed: number;
   };
@@ -149,11 +158,27 @@ export function createGameDefaultBalanceSettings(): BalanceSettings {
     },
     armored: { enabled: true, chance: GAME_CONFIG.bricks.armoredEligibleChance, hp: GAME_CONFIG.bricks.armoredHp, xp: GAME_CONFIG.bricks.armoredXp },
     boss: {
-      enabled: true, hp: GAME_CONFIG.boss.hp, checkpoints: [...GAME_CONFIG.boss.checkpointSeconds],
+      enabled: true, hp: GAME_CONFIG.boss.hp,
       lotteryChance: GAME_CONFIG.boss.killLotteryChance, speedMultiplier: GAME_CONFIG.boss.slowSpeedMultiplier,
       entranceSpeed: GAME_CONFIG.brickSpeed.bossEntranceSpeed,
+      firstLotterySeconds: GAME_CONFIG.boss.firstLotterySeconds,
+      rearmSeconds: GAME_CONFIG.boss.lotteryRearmSeconds,
+      finalBossLeadSeconds: GAME_CONFIG.boss.finalBossLeadSeconds,
     },
     ball: { speed: GAME_CONFIG.ball.speed },
+    playerSurvival: {
+      maxHp: GAME_CONFIG.player.maxHp,
+      finalBallLostDamage: GAME_CONFIG.player.finalBallLostDamage,
+      normalBrickLostDamage: GAME_CONFIG.player.normalBrickLostDamage,
+      normalBrickPaddleDamage: GAME_CONFIG.player.normalBrickPaddleDamage,
+      armoredBrickLostDamage: GAME_CONFIG.player.armoredBrickLostDamage,
+      armoredBrickPaddleDamage: GAME_CONFIG.player.armoredBrickPaddleDamage,
+      bossLostDamage: GAME_CONFIG.player.bossLostDamage,
+      bossContactPlayerDamage: GAME_CONFIG.boss.paddleContactDamage,
+      bossContactBossDamage: GAME_CONFIG.boss.paddleContactDamage,
+      bossContactCooldownSeconds: GAME_CONFIG.boss.paddleContactCooldownSeconds,
+      levelUpHeal: GAME_CONFIG.player.levelUpHeal,
+    },
     pressureAssist: {
       enabled: true,
       graceSeconds: GAME_CONFIG.brickSpeed.pressureAssistGraceSeconds,
@@ -217,7 +242,21 @@ export function clampBalanceSettings(input: BalanceSettings): BalanceSettings {
     settings.speed.max[speedClass] = finite(settings.speed.max[speedClass], GAME_CONFIG.brickSpeed.max[speedClass]);
   }
   settings.armored.chance = Math.min(1, finite(settings.armored.chance, 0));
+  settings.playerSurvival.maxHp = Math.max(1, Math.round(finite(settings.playerSurvival.maxHp, GAME_CONFIG.player.maxHp, 1)));
+  settings.playerSurvival.finalBallLostDamage = Math.round(finite(settings.playerSurvival.finalBallLostDamage, GAME_CONFIG.player.finalBallLostDamage));
+  settings.playerSurvival.normalBrickLostDamage = Math.round(finite(settings.playerSurvival.normalBrickLostDamage, GAME_CONFIG.player.normalBrickLostDamage));
+  settings.playerSurvival.normalBrickPaddleDamage = Math.round(finite(settings.playerSurvival.normalBrickPaddleDamage, GAME_CONFIG.player.normalBrickPaddleDamage));
+  settings.playerSurvival.armoredBrickLostDamage = Math.round(finite(settings.playerSurvival.armoredBrickLostDamage, GAME_CONFIG.player.armoredBrickLostDamage));
+  settings.playerSurvival.armoredBrickPaddleDamage = Math.round(finite(settings.playerSurvival.armoredBrickPaddleDamage, GAME_CONFIG.player.armoredBrickPaddleDamage));
+  settings.playerSurvival.bossLostDamage = Math.round(finite(settings.playerSurvival.bossLostDamage, GAME_CONFIG.player.bossLostDamage));
+  settings.playerSurvival.bossContactPlayerDamage = Math.round(finite(settings.playerSurvival.bossContactPlayerDamage, GAME_CONFIG.boss.paddleContactDamage));
+  settings.playerSurvival.bossContactBossDamage = Math.round(finite(settings.playerSurvival.bossContactBossDamage, GAME_CONFIG.boss.paddleContactDamage));
+  settings.playerSurvival.bossContactCooldownSeconds = finite(settings.playerSurvival.bossContactCooldownSeconds, GAME_CONFIG.boss.paddleContactCooldownSeconds);
+  settings.playerSurvival.levelUpHeal = Math.round(finite(settings.playerSurvival.levelUpHeal, GAME_CONFIG.player.levelUpHeal));
   settings.boss.lotteryChance = Math.min(1, finite(settings.boss.lotteryChance, 0));
+  settings.boss.firstLotterySeconds = finite(settings.boss.firstLotterySeconds, GAME_CONFIG.boss.firstLotterySeconds);
+  settings.boss.rearmSeconds = finite(settings.boss.rearmSeconds, GAME_CONFIG.boss.lotteryRearmSeconds);
+  settings.boss.finalBossLeadSeconds = finite(settings.boss.finalBossLeadSeconds, GAME_CONFIG.boss.finalBossLeadSeconds);
   settings.assumptions.monteCarloSamples = Math.max(100, Math.min(50000,
     Math.round(finite(settings.assumptions.monteCarloSamples, 5000, 1))));
   for (const id of Object.keys(settings.powers) as PowerId[]) {
@@ -320,9 +359,9 @@ export function estimateFormation(settings: BalanceSettings, density: number, sp
 
 export function getGunMaxDps(level: number): number {
   const spec = getGunSpec(level);
-  if (spec.shots <= 0) return 0;
-  return spec.shots * spec.projectileDamage
-    / (spec.reloadSeconds + (spec.shots - 1) * spec.shotIntervalSeconds);
+  if (spec.bulletsPerVolley <= 0) return 0;
+  return spec.bulletsPerVolley * spec.projectileDamage
+    / (spec.reloadSeconds + (spec.volleyPairs - 1) * spec.shotIntervalSeconds);
 }
 
 export function getMissileMaxDps(level: number): number {
@@ -544,23 +583,23 @@ export function calculateBalance(
     }
     return report;
   }) : [];
-  const applicableCheckpoint = [...settings.boss.checkpoints].reverse().find((checkpoint) => settings.timeSeconds >= checkpoint);
   const survivalRules = {
     easyEndSeconds: settings.speedTiming.easyEndSeconds,
     winSeconds: settings.speedTiming.winSeconds,
     maxSpeedLeadSeconds: settings.speedTiming.maxSpeedLeadSeconds,
   };
-  const guaranteedFinalBossTime = getSpeedRampEndSecondsForRules(survivalRules);
+  const guaranteedFinalBossTime = settings.speedTiming.winSeconds - settings.boss.finalBossLeadSeconds;
   const expectedLotteryKills = settings.boss.lotteryChance > 0 ? 1 / settings.boss.lotteryChance : Number.POSITIVE_INFINITY;
-  const bossDiscreteHp = settings.boss.enabled && applicableCheckpoint !== undefined ? settings.boss.hp : 0;
+  const bossApplicable = settings.boss.enabled && settings.timeSeconds >= settings.boss.firstLotterySeconds;
+  const bossDiscreteHp = bossApplicable ? settings.boss.hp : 0;
   const bossCruiseSpeed = classSpeeds.SLOW * settings.boss.speedMultiplier;
   const rushArrivalSpeed = settings.boss.entranceSpeed;
   const combinedPower = subtract(build.total, baseline.base);
   return {
     density, classSpeeds, normalizedWeights, weightedAverageSpeed, formation, averageHpPerBrick, boardHpPerSecond,
     boss: {
-      applicable: applicableCheckpoint !== undefined && settings.boss.enabled,
-      checkpoint: applicableCheckpoint, guaranteedFinalBossTime,
+      applicable: bossApplicable,
+      guaranteedFinalBossTime,
       guaranteedFinalBossDue: settings.boss.enabled && settings.timeSeconds >= guaranteedFinalBossTime,
       expectedLotteryKills, discreteHp: bossDiscreteHp,
       amortizedHpPerSecond: bossDiscreteHp / Math.max(1, expectedLotteryKills / Math.max(0.01, build.total.likely)),

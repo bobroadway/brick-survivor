@@ -26,8 +26,8 @@ function assert(condition: unknown, message: string): asserts condition {
 const powerRules: PowerRuleParameters = { ...GAME_CONFIG.powers };
 const changed: PowerRuleParameters = {
   ...powerRules,
-  gunShotsByLevel: [2, 4, 6, 8, 10],
-  gunAlternatingPortsLevel: 4,
+  gunVolleyPairsByLevel: [2, 4, 6, 8, 10],
+  gunReloadSecondsByLevel: [10, 9, 8, 7, 6],
   piercingCapacityByLevel: [2, 4, 6, 8, 10],
   splittingCooldownSecondsByLevel: [11, 12, 13, 14, 15],
   splittingBallsAddedPerActivation: 2,
@@ -41,10 +41,10 @@ const changed: PowerRuleParameters = {
   iceCollisionCapacityByLevel: [3, 4, 5, 6, 7],
 };
 
-assert(getGunSpec(3, changed).shots === 6 && getGunSpec(3, changed).origins.every((origin) => origin === 'CENTER'),
-  'Gun spec did not honor nonstandard canonical inputs');
-assert(getGunSpec(4, changed).origins.join(',') === 'LEFT,RIGHT,LEFT,RIGHT,LEFT,RIGHT,LEFT,RIGHT',
-  'Gun spec did not honor alternating-port threshold');
+assert(getGunSpec(3, changed).volleyPairs === 6 && getGunSpec(3, changed).bulletsPerVolley === 12,
+  'Gun spec did not honor nonstandard pair counts');
+assert(getGunSpec(4, changed).reloadSeconds === 7,
+  'Gun spec did not honor nonstandard reload timings');
 assert(getPierceSpec(3, changed).capacity === 6, 'Pierce spec did not honor nonstandard capacity');
 assert(getSplitSpec(2, changed).cooldownSeconds === 12 && getSplitSpec(2, changed).ballsAddedPerActivation === 2,
   'Split spec did not honor nonstandard cadence');

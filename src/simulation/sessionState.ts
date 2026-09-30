@@ -2,7 +2,6 @@ export enum GamePhase {
   Ready = 'READY',
   Running = 'RUNNING',
   Paused = 'PAUSED',
-  LifeLost = 'LIFE_LOST',
   GameOver = 'GAME_OVER',
   Win = 'WIN',
   LevelUpSlowdown = 'LEVEL_UP_SLOWDOWN',
@@ -43,18 +42,6 @@ export function resumeManualPause(session: SessionState): void {
 
 export function launchReadyBall(session: SessionState): void {
   if (session.phase === GamePhase.Ready) session.phase = GamePhase.Running;
-}
-
-export function beginLifeLost(session: SessionState): void {
-  session.phase = GamePhase.LifeLost;
-  session.phaseTimerSeconds = 0;
-  session.pausedGameplayPhase = null;
-}
-
-export function continueAfterLifeLost(session: SessionState): boolean {
-  if (session.phase !== GamePhase.LifeLost) return false;
-  session.phase = GamePhase.Running;
-  return true;
 }
 
 export function enterGameOver(session: SessionState): void {

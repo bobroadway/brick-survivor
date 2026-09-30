@@ -6,7 +6,7 @@ import {
   recordBallPaddleContact,
   type BrickPressureAssistState,
 } from './brickPressureAssist';
-import { createBrickField, type BrickFieldState } from './brickField';
+import { createBrickField, type BrickFieldState, type BrickState } from './brickField';
 import { createRunProgression, type RunProgressionState } from './progression';
 import { createRunPowerState, getPowerLevel, type RunPowerState } from './powers';
 
@@ -54,23 +54,29 @@ export interface BossDeathEffectState {
   x: number; y: number; width: number; height: number;
   displayHp: number; displayHpStepTimerSeconds: number; frozen: boolean; remainingSeconds: number;
 }
+export interface FallingBrickEffectState {
+  id: string; x: number; y: number; width: number; height: number;
+  velocityY: number; speedClass: BrickState['speedClass']; kind: BrickState['kind'];
+  hp: number; armored?: boolean; iceState?: BrickState['iceState']; isFinalBoss?: boolean;
+}
 export interface BossDirectorState {
-  nextCheckpointIndex: number;
-  armedOpportunities: number;
   lotteryGeneratorState: number;
   bossQueued: boolean;
   bossPreGapGenerated: boolean;
   bossPreGapRowId?: number;
   queuedStartColumn?: number;
-  activeBossId?: string;
+  activeNormalBossId?: string;
+  ordinaryLotteryCooldownUntilSeconds: number;
   finalBossTriggered: boolean;
-  finalBossPending: boolean;
+  finalBossStartColumn?: number;
 }
 export interface GameState {
   paddle: PaddleState;
   balls: BallState[];
   brickField: BrickFieldState;
-  lives: number;
+  playerHp: number;
+  playerMaxHp: number;
+  playerDamageEventId: number;
   nextBallId: number;
   progression: RunProgressionState;
   powers: RunPowerState;
@@ -79,6 +85,7 @@ export interface GameState {
   windEffects: WindEffectState[];
   iceShatterEffects: IceShatterEffectState[];
   bossDeathEffects: BossDeathEffectState[];
+  fallingBrickEffects: FallingBrickEffectState[];
   bossDirector: BossDirectorState;
   nextProjectileId: number;
   electricProcs: ElectricProcState[];
@@ -108,7 +115,9 @@ export function createInitialGameState(): GameState {
       speedAssistElapsedSeconds: ball.multiballSpeedTransitionDurationSeconds,
     }],
     brickField: createBrickField(),
-    lives: GAME_CONFIG.run.startingLives,
+    playerHp: GAME_CONFIG.player.maxHp,
+    playerMaxHp: GAME_CONFIG.player.maxHp,
+    playerDamageEventId: 0,
     nextBallId: 2,
     progression: createRunProgression(),
     powers,
@@ -117,14 +126,13 @@ export function createInitialGameState(): GameState {
     windEffects: [],
     iceShatterEffects: [],
     bossDeathEffects: [],
+    fallingBrickEffects: [],
     bossDirector: {
-      nextCheckpointIndex: 0,
-      armedOpportunities: 0,
       lotteryGeneratorState: GAME_CONFIG.boss.lotterySeed >>> 0,
       bossQueued: false,
       bossPreGapGenerated: false,
+      ordinaryLotteryCooldownUntilSeconds: GAME_CONFIG.boss.firstLotterySeconds,
       finalBossTriggered: false,
-      finalBossPending: false,
     },
     nextProjectileId: 1,
     electricProcs: [],

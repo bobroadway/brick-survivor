@@ -688,6 +688,17 @@ function testWindTornadoGeometry(): void {
     }
   }
   assert(selected.size === 15, 'Wind tornado did not select exactly 15 occupied geometric cells');
+
+  const topSource: BrickDestruction = { source: 'BALL', x: 602, y: 100, width: 56, height: 20 };
+  const topCandidates: BrickState[] = [];
+  for (let row = 1; row <= 7; row += 1) {
+    for (let column = -1; column <= 1; column += 1) {
+      topCandidates.push(makeBrick(`top-${row}-${column}`, 602 + column * 60, 100 - row * 24));
+    }
+  }
+  const clipped = new Set(selectWindTargets(5, topSource, topCandidates).map(({ id }) => id));
+  assert([...clipped].sort().join(',') === ['top-1-0', 'top-2-0', 'top-3-0'].join(','),
+    'top clipping warped the fixed Lv5 footprint or moved the three-wide section');
 }
 
 function testMultiballTargetSpeeds(): void {
@@ -753,6 +764,8 @@ function testPaddleSizeWidthsAndBounceAngles(): void {
 }
 
 function testGunCadence(): void {
+  const expectedPairs = [1, 1, 2, 2, 3];
+  const expectedReloads = [6, 4, 6, 4, 4];
   for (let level = 1; level <= 5; level += 1) {
     const state = createInitialGameState();
     state.brickField.columns.forEach((column) => column.splice(0));
@@ -761,32 +774,38 @@ function testGunCadence(): void {
     state.paddle.width = 240;
     state.powers.levels.GUN = level;
     const spec = getGunSpec(level);
-    state.powers.gunShotsRemaining = spec.shots;
+    state.powers.gunVolleyStepsRemaining = spec.volleyPairs;
     const input = { movementAxis: 0, mouseDisplacement: 0, speedMultiplier: 1 };
-    const shotTimes: number[] = [];
+    const pairTimes: number[] = [];
     let priorProjectileCount = 0;
     for (let step = 0; step < 120; step += 1) {
       stepSimulation(state, input, 1 / 120, 1 / 120);
       if (state.projectiles.length > priorProjectileCount) {
-        shotTimes.push(step / 120);
+        assert(state.projectiles.length - priorProjectileCount === 2, `Gun Lv${level} pair was not simultaneous`);
+        pairTimes.push(step / 120);
         priorProjectileCount = state.projectiles.length;
       }
       if (state.powers.gunReloadSeconds > 0) break;
     }
-    assert(state.projectiles.length === spec.shots, `Gun Lv${level} shot count`);
+    assert(spec.volleyPairs === expectedPairs[level - 1], `Gun Lv${level} canonical pair count`);
+    assert(spec.bulletsPerVolley === expectedPairs[level - 1] * 2, `Gun Lv${level} canonical bullet count`);
+    assert(state.projectiles.length === spec.bulletsPerVolley, `Gun Lv${level} bullet count`);
     assert(state.projectiles.every(({ damage }) => damage === 1), `Gun Lv${level} projectile damage`);
     const mountOffset = state.paddle.width / 2 - GAME_CONFIG.powers.gunMountInset;
-    const expectedXs = level < 5
-      ? Array(spec.shots).fill(state.paddle.x)
-      : spec.origins.map((origin) => state.paddle.x + (origin === 'LEFT' ? -mountOffset : mountOffset));
+    const expectedXs = Array.from({ length: spec.volleyPairs }, () => [
+      state.paddle.x - mountOffset,
+      state.paddle.x + mountOffset,
+    ]).flat();
     state.projectiles.forEach((projectile, index) =>
       assertNear(projectile.x, expectedXs[index], `Gun Lv${level} shot ${index + 1} origin`));
-    for (let index = 1; index < shotTimes.length; index += 1) {
+    assert(state.projectiles.every((projectile) => projectile.x !== state.paddle.x), `Gun Lv${level} fired a center shot`);
+    for (let index = 1; index < pairTimes.length; index += 1) {
       assert(
-        Math.abs(shotTimes[index] - shotTimes[index - 1] - spec.shotIntervalSeconds) <= GAME_CONFIG.fixedStepSeconds + 1e-9,
-        `Gun Lv${level} shot interval ${index} exceeded fixed-step tolerance`,
+        Math.abs(pairTimes[index] - pairTimes[index - 1] - spec.shotIntervalSeconds) <= GAME_CONFIG.fixedStepSeconds + 1e-9,
+        `Gun Lv${level} pair interval ${index} exceeded fixed-step tolerance`,
       );
     }
+    assertNear(spec.reloadSeconds, expectedReloads[level - 1], `Gun Lv${level} canonical reload`);
     assertNear(state.powers.gunReloadSeconds, spec.reloadSeconds, `Gun Lv${level} reload duration`);
   }
 }
